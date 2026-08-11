@@ -255,7 +255,8 @@ c_read(char **wp)
 	struct shf *shf;
 	int optc;
 	const char *emsg;
-	XString cs, xs;
+	/* xs is only set up when savehist is set */
+	XString cs, xs = { NULL, NULL, 0, NULL };
 	struct tbl *vp;
 	char *xp = NULL;
 
@@ -932,7 +933,6 @@ c_cd(char **wp)
 	int rval;
 	struct tbl *pwd_s, *oldpwd_s;
 	XString xs;
-	char *xp;
 	char *dir, *try, *pwd;
 	int phys_path;
 	char *cdpath;
@@ -1008,20 +1008,16 @@ c_cd(char **wp)
 		return 1;
 	}
 
-	Xinit(xs, xp, PATH_MAX, ATEMP);
-	/* xp will have a bogus value after make_path() - set it to 0
-	 * so that if it's used, it will cause a dump
-	 */
-	xp = NULL;
+	Xinitn(xs, PATH_MAX, ATEMP);
 
 	cdpath = str_val(global("CDPATH"));
 	do {
 		cdnode = make_path(current_wd, dir, &cdpath, &xs, &phys_path);
 		if (physical)
-			rval = chdir(try = Xstring(xs, xp) + phys_path);
+			rval = chdir(try = Xstr(xs) + phys_path);
 		else {
-			simplify_path(Xstring(xs, xp));
-			rval = chdir(try = Xstring(xs, xp));
+			simplify_path(Xstr(xs));
+			rval = chdir(try = Xstr(xs));
 		}
 	} while (rval == -1 && cdpath != NULL);
 
@@ -1044,11 +1040,11 @@ c_cd(char **wp)
 		/* Ignore failure (happens if readonly or integer) */
 		setstr(oldpwd_s, current_wd, KSH_RETURN_ERROR);
 
-	if (Xstring(xs, xp)[0] != '/') {
+	if (Xstr(xs)[0] != '/') {
 		pwd = NULL;
 	} else
-	if (!physical || !(pwd = get_phys_path(Xstring(xs, xp))))
-		pwd = Xstring(xs, xp);
+	if (!physical || !(pwd = get_phys_path(Xstr(xs))))
+		pwd = Xstr(xs);
 
 	/* Set PWD */
 	if (pwd) {
@@ -1058,7 +1054,7 @@ c_cd(char **wp)
 		setstr(pwd_s, ptmp, KSH_RETURN_ERROR);
 	} else {
 		set_current_wd(null);
-		pwd = Xstring(xs, xp);
+		pwd = Xstr(xs);
 		/* XXX unset $PWD? */
 	}
 	if (printpath || cdnode)

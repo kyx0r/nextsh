@@ -2954,7 +2954,8 @@ globit(XString *xs,	/* dest string */
 char *
 debunk(char *dp, const char *sp, size_t dlen)
 {
-	char *d, *s;
+	char *d;
+	const char *s;
 
 	if ((s = strchr(sp, MAGIC))) {
 		size_t slen = s - sp;

@@ -1024,12 +1024,17 @@ typedef struct XString {
 
 typedef char * XStringP;
 
-/* initialize expandable string */
-#define	Xinit(xs, xp, length, area) do { \
+/* initialize expandable string, without a write pointer */
+#define	Xinitn(xs, length, area) do { \
 			(xs).len = length; \
 			(xs).areap = (area); \
 			(xs).beg = alloc((xs).len + X_EXTRA, (xs).areap); \
 			(xs).end = (xs).beg + (xs).len; \
+		} while (0)
+
+/* initialize expandable string */
+#define	Xinit(xs, xp, length, area) do { \
+			Xinitn(xs, length, area); \
 			xp = (xs).beg; \
 		} while (0)
 
@@ -1052,7 +1057,8 @@ typedef char * XStringP;
 /* close, return string */
 #define	Xclose(xs, xp)	aresize((xs).beg, ((xp) - (xs).beg), (xs).areap)
 /* begin of string */
-#define	Xstring(xs, xp)	((xs).beg)
+#define	Xstr(xs)	((xs).beg)
+#define	Xstring(xs, xp)	Xstr(xs)
 
 #define Xnleft(xs, xp) ((xs).end - (xp))	/* may be less than 0 */
 #define	Xlength(xs, xp) ((xp) - (xs).beg)

@@ -253,8 +253,8 @@ shf_fdclose(struct shf *shf)
 }
 
 /* Close a string - if it was opened for writing, it is null terminated;
- * returns a pointer to the string and frees shf if it was allocated
- * (does not free string if it was allocated).
+ * returns a pointer to the string (does not free it if it was allocated).
+ * All callers pass a caller-owned (stack) shf, so shf itself is never freed.
  */
 char *
 shf_sclose(struct shf *shf)
@@ -266,8 +266,6 @@ shf_sclose(struct shf *shf)
 		shf->wnleft++;
 		shf_putc('\0', shf);
 	}
-	if (shf->flags & SHF_ALLOCS)
-		afree(shf, shf->areap);
 	return (char *) s;
 }
 
