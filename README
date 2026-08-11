@@ -1,7 +1,7 @@
 NEXTSH(1)                   General Commands Manual                  NEXTSH(1)
 
 NAME
-     nextsh, rnextsh - next Korn shell
+     nextsh - A small Korn shell
 
 SYNOPSIS
      nextsh [-+abCefhiklmnpruvXx] [-+o option]
