@@ -6,5 +6,5 @@ default.profdata
 callgrind.out.*
 cachegrind.out.*
 tags
-nextsh
+/sh
 CLAUDE.md

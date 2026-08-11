@@ -62,26 +62,26 @@ esac
 build() {
     require "${CC}"
     log "$G" "Entering step: \"Build \"${BASE##*/}\" using \"$CC\"\""
-    run "$CC sh.c -o nextsh $CFLAGS $LDFLAGS" || {
+    run "$CC sh.c -o sh $CFLAGS $LDFLAGS" || {
         log "$R" "Failed during step: \"Build \"${BASE##*/}\" using \"$CC\""
         exit 1
     }
 }
 
 install() {
-    run rm -f "$DESTDIR$PREFIX/bin/nextsh" 2> /dev/null
-    command -v "$STRIP" >/dev/null 2>&1 && run "$STRIP" nextsh
+    run rm -f "$DESTDIR$PREFIX/bin/sh" 2> /dev/null
+    command -v "$STRIP" >/dev/null 2>&1 && run "$STRIP" sh
     run mkdir -p "$DESTDIR$PREFIX/bin/" &&
-    run cp -f nextsh "$DESTDIR$PREFIX/bin/nextsh" &&
-    [ -x "$DESTDIR$PREFIX/bin/nextsh" ] && log "$G" "\"${BASE##*/}\" has been installed to $DESTDIR$PREFIX/bin/nextsh" || log "$R" "Couldn't finish installation"
+    run cp -f sh "$DESTDIR$PREFIX/bin/sh" &&
+    [ -x "$DESTDIR$PREFIX/bin/sh" ] && log "$G" "\"${BASE##*/}\" has been installed to $DESTDIR$PREFIX/bin/sh" || log "$R" "Couldn't finish installation"
 }
 
 check() {
-    [ -x ./nextsh ] || build
+    [ -x ./sh ] || build
     log "$G" "Entering step: \"Check \"${BASE##*/}\"\""
     fail=0
     t() { # t <name> <script> <expected>
-        got="$(printf '%s\n' "$2" | ./nextsh 2>&1)"
+        got="$(printf '%s\n' "$2" | ./sh 2>&1)"
         if [ "$got" = "$3" ]; then
             log "$B" "ok    $1"
         else
@@ -126,7 +126,7 @@ while [ $# -gt 0 ] || [ "$1" = "" ]; do
     case "$1" in
     "install")
         shift
-        [ -x ./nextsh ] && install && exit 0 || build && install && exit 0
+        [ -x ./sh ] && install && exit 0 || build && install && exit 0
         ;;
     "debug")
         shift
@@ -154,10 +154,10 @@ while [ $# -gt 0 ] || [ "$1" = "" ]; do
                 fi
                 [ -z "$PROFDATA" ] && log "$R" "pgobuild with clang requires llvm-profdata" && exit 1
             fi
-            run "$CC sh.c -fprofile-generate=. -o nextsh -O2 $CFLAGS $LDFLAGS"
-            ./nextsh -c 'i=0; while [ $i -lt 2000 ]; do i=$((i + 1)); x="$(echo pgo $i)"; case $x in pgo*) : ;; esac; done' > /dev/null
+            run "$CC sh.c -fprofile-generate=. -o sh -O2 $CFLAGS $LDFLAGS"
+            ./sh -c 'i=0; while [ $i -lt 2000 ]; do i=$((i + 1)); x="$(echo pgo $i)"; case $x in pgo*) : ;; esac; done' > /dev/null
             [ "$clang" = 1 ] && run "$PROFDATA" merge ./*.profraw -o default.profdata
-            run "$CC sh.c -fprofile-use=. -o nextsh -O2 $CFLAGS $LDFLAGS"
+            run "$CC sh.c -fprofile-use=. -o sh -O2 $CFLAGS $LDFLAGS"
             rm -f ./*.gcda ./*.profraw ./default.profdata
         }
         require "${CC}"
@@ -169,7 +169,7 @@ while [ $# -gt 0 ] || [ "$1" = "" ]; do
         ;;
     "clean")
         shift
-        run rm -f nextsh callgrind.out.* cachegrind.out.* ./*.gcda ./*.profraw default.profdata 2>/dev/null
+        run rm -f sh callgrind.out.* cachegrind.out.* ./*.gcda ./*.profraw default.profdata 2>/dev/null
         exit 0
         ;;
     "" | "build")
