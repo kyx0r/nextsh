@@ -415,7 +415,7 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
 	 * functions/dot scripts, but in interactive and script) -
 	 * perhaps save last arg here and set it in shell()?.
 	 */
-	if (!Flag(FSH) && Flag(FTALKING) && *(lastp = ap)) {
+	if (Flag(FTALKING) && *(lastp = ap)) {
 		while (*++lastp)
 			;
 		/* setstr() can't fail here */
@@ -663,12 +663,10 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
 			break;
 		}
 
-		if (!Flag(FSH)) {
-			/* set $_ to program's full path */
-			/* setstr() can't fail here */
-			setstr(typeset("_", LOCAL|EXPORT, 0, INTEGER, 0),
-			    tp->val.s, KSH_RETURN_ERROR);
-		}
+		/* set $_ to program's full path */
+		/* setstr() can't fail here */
+		setstr(typeset("_", LOCAL|EXPORT, 0, INTEGER, 0),
+		    tp->val.s, KSH_RETURN_ERROR);
 
 		if (flags&XEXEC) {
 			j_exit();

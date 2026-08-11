@@ -91,6 +91,12 @@ DESCRIPTION
      errors, the exit status is that of the last command executed, or zero, if
      no command is executed.
 
+     nextsh behaves identically no matter what name it is invoked with.  The
+     only exceptions are the two that carry a contract with the system rather
+     than a preference: a leading `-' marks a login shell, and the restricted
+     names described under -r.  In particular, invoking nextsh as sh does not
+     quietly turn off parts of the language, as other Korn shells do.
+
    Command syntax
      The shell begins parsing its input by breaking it into words.  Words,
      which are sequences of characters, are delimited by unquoted whitespace
@@ -1307,25 +1313,6 @@ DESCRIPTION
                alias a='for ' i='j'
                a i in 1 2; do echo i=$i j=$j; done
 
-   Strict Bourne shell mode
-     When the sh option is enabled (see the set command), nextsh will behave
-     like sh(1) in the following ways:
-
-     o   The parameter $_ is not set to:
-
-         -   the expanded alias' full program path after entering commands
-             that are tracked aliases
-         -   the last argument on the command line after entering external
-             commands
-         -   the file that changed when MAILPATH is set to monitor a mailbox
-
-     o   File descriptors are left untouched when executing exec with no
-         arguments.
-
-     o   Backslash-escaped special characters are not substituted in PS1.
-
-     o   Sequences of `((...))' are not interpreted as arithmetic expressions.
-
    Command execution
      After evaluation of command-line arguments, redirections, and parameter
      assignments, the type of command is determined: a special built-in, a
@@ -1876,9 +1863,6 @@ DESCRIPTION
              restricted       The shell is a restricted shell.  This option
                               can only be used when the shell is invoked.  See
                               above for a description of what this means.
-
-             sh               Enable strict Bourne shell mode (see Strict
-                              Bourne shell mode above).
 
              vi               Enable vi(1)-like command-line editing
                               (interactive shells only).

@@ -795,13 +795,11 @@ Done:
 			return c;
 
 		case '(':  /*)*/
-			if (!Flag(FSH)) {
-				if ((c2 = getsc()) == '(') /*)*/
-					/* XXX need to handle ((...); (...)) */
-					c = MDPAREN;
-				else
-					ungetsc(c2);
-			}
+			if ((c2 = getsc()) == '(') /*)*/
+				/* XXX need to handle ((...); (...)) */
+				c = MDPAREN;
+			else
+				ungetsc(c2);
 			return c;
 		  /*(*/
 		case ')':
@@ -1237,10 +1235,7 @@ dopprompt(const char *sp, int ntruncate, const char **spp, int doprint)
 			cp++;
 			if (!*cp)
 				break;
-			/* Expand \h and \$ for both, sh(1) and ksh(1) */
-			if (Flag(FSH) && !(*cp == 'h' || *cp == 'p'))
-				snprintf(strbuf, sizeof strbuf, "\\%c", *cp);
-			else switch (*cp) {
+			switch (*cp) {
 			case 'a':	/* '\' 'a' bell */
 				strbuf[0] = '\007';
 				strbuf[1] = '\0';
