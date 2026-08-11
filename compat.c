@@ -1,8 +1,6 @@
 /*
  * nextsh: bundled replacements for library functions that not every
  * libc provides.  Each carries the license of its origin.
- *
- * Public domain, except where noted.
  */
 
 /*

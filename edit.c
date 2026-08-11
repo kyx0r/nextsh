@@ -1,7 +1,5 @@
 /*
  * nextsh: interactive command line editing and history.
- *
- * Public domain, except where noted.
  */
 
 /*

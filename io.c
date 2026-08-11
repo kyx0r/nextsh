@@ -1,7 +1,5 @@
 /*
  * nextsh: all input and output the shell performs on its own behalf.
- *
- * Public domain, except where noted.
  */
 
 /*

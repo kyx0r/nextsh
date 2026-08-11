@@ -1,7 +1,5 @@
 /*
  * nextsh: variables, arithmetic and word expansion.
- *
- * Public domain, except where noted.
  */
 
 /*

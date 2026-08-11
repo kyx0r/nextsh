@@ -1,7 +1,5 @@
 /*
  * nextsh: command execution.
- *
- * Public domain, except where noted.
  */
 
 /*
