@@ -4,8 +4,8 @@ NAME
      nextsh - A small Korn shell
 
 SYNOPSIS
-     nextsh [-+abCefhiklmnpruvXx] [-+o option]
-            [-c string | -s | file [argument ...]]
+     sh [-+abCefhiklmnpruvXx] [-+o option]
+        [-c string | -s | file [argument ...]]
 
 DESCRIPTION
      nextsh is a command interpreter intended for both interactive and shell
