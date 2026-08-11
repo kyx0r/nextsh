@@ -86,18 +86,7 @@ its effective user ID (group ID) to its real user ID (group ID).
 Restricted shell.
 A shell is
 .Dq restricted
-if this
-option is used;
-if the basename the shell was invoked with was
-.Dq rksh
-or
-.Dq rnextsh ;
-or if the
-.Ev SHELL
-parameter is set to
-.Dq rksh
-or
-.Dq rnextsh .
+only if this option is used.
 The following restrictions come into effect after the shell processes any
 profile and
 .Ev ENV
@@ -199,11 +188,10 @@ command is executed.
 .Pp
 .Nm
 behaves identically no matter what name it is invoked with.
-The only exceptions are the two that carry a contract with the system
+The only exception is the one that carries a contract with the system
 rather than a preference: a leading
 .Sq -
-marks a login shell, and the restricted names described under
-.Fl r .
+marks a login shell.
 In particular, invoking
 .Nm
 as
