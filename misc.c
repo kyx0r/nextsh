@@ -1,19 +1,386 @@
-/*	$OpenBSD: misc.c,v 1.78 2021/12/24 22:08:37 deraadt Exp $	*/
+/*
+ * nextsh: housekeeping - memory, tables, options, paths and mail.
+ *
+ * Public domain, except where noted.
+ */
+
+/*
+ * Area based allocation, built on malloc/free
+ */
+
+/* Public domain, like most of the rest of ksh */
+
+/*
+ * area-based allocation built on malloc/free
+ */
+
+
+
+struct link {
+	struct link *prev;
+	struct link *next;
+};
+
+Area *
+ainit(Area *ap)
+{
+	ap->freelist = NULL;
+	return ap;
+}
+
+void
+afreeall(Area *ap)
+{
+	struct link *l, *l2;
+
+	for (l = ap->freelist; l != NULL; l = l2) {
+		l2 = l->next;
+		free(l);
+	}
+	ap->freelist = NULL;
+}
+
+#define L2P(l)	( (void *)(((char *)(l)) + sizeof(struct link)) )
+#define P2L(p)	( (struct link *)(((char *)(p)) - sizeof(struct link)) )
+
+void *
+alloc(size_t size, Area *ap)
+{
+	struct link *l;
+
+	/* ensure that we don't overflow by allocating space for link */
+	if (size > SIZE_MAX - sizeof(struct link))
+		internal_errorf("unable to allocate memory");
+
+	l = malloc(sizeof(struct link) + size);
+	if (l == NULL)
+		internal_errorf("unable to allocate memory");
+	l->next = ap->freelist;
+	l->prev = NULL;
+	if (ap->freelist)
+		ap->freelist->prev = l;
+	ap->freelist = l;
+
+	return L2P(l);
+}
+
+void *
+areallocarray(void *ptr, size_t nmemb, size_t size, Area *ap)
+{
+	/* condition logic cloned from calloc() */
+	if ((nmemb >= MUL_NO_OVERFLOW || size >= MUL_NO_OVERFLOW) &&
+	    nmemb > 0 && SIZE_MAX / nmemb < size) {
+		internal_errorf("unable to allocate memory");
+	}
+
+	return aresize(ptr, nmemb * size, ap);
+}
+
+void *
+aresize(void *ptr, size_t size, Area *ap)
+{
+	struct link *l, *l2, *lprev, *lnext;
+
+	if (ptr == NULL)
+		return alloc(size, ap);
+
+	/* ensure that we don't overflow by allocating space for link */
+	if (size > SIZE_MAX - sizeof(struct link))
+		internal_errorf("unable to allocate memory");
+
+	l = P2L(ptr);
+	lprev = l->prev;
+	lnext = l->next;
+
+	l2 = realloc(l, sizeof(struct link) + size);
+	if (l2 == NULL)
+		internal_errorf("unable to allocate memory");
+	if (lprev)
+		lprev->next = l2;
+	else
+		ap->freelist = l2;
+	if (lnext)
+		lnext->prev = l2;
+
+	return L2P(l2);
+}
+
+void
+afree(void *ptr, Area *ap)
+{
+	struct link *l;
+
+	if (!ptr)
+		return;
+
+	l = P2L(ptr);
+	if (l->prev)
+		l->prev->next = l->next;
+	else
+		ap->freelist = l->next;
+	if (l->next)
+		l->next->prev = l->prev;
+
+	free(l);
+}
+
+/*
+ * Hash tables: symbol and command tables
+ */
+
+/*
+ * dynamic hashed associative table for commands and variables
+ */
+
+
+
+#define	INIT_TBLS	8	/* initial table size (power of 2) */
+
+struct table taliases;	/* tracked aliases */
+struct table builtins;	/* built-in commands */
+struct table aliases;	/* aliases */
+struct table keywords;	/* keywords */
+struct table homedirs;	/* homedir() cache */
+
+char *search_path;	/* copy of either PATH or def_path */
+const char *def_path;	/* path to use if PATH not set */
+char *tmpdir;		/* TMPDIR value */
+const char *prompt;
+int cur_prompt;		/* PS1 or PS2 */
+int current_lineno;	/* LINENO value */
+
+static void	texpand(struct table *, int);
+static int	tnamecmp(const void *, const void *);
+
+
+unsigned int
+hash(const char *n)
+{
+	unsigned int h = 0;
+
+	while (*n != '\0')
+		h = 33*h + (unsigned char)(*n++);
+	return h;
+}
+
+void
+ktinit(struct table *tp, Area *ap, int tsize)
+{
+	tp->areap = ap;
+	tp->tbls = NULL;
+	tp->size = tp->nfree = 0;
+	if (tsize)
+		texpand(tp, tsize);
+}
+
+static void
+texpand(struct table *tp, int nsize)
+{
+	int i;
+	struct tbl *tblp, **p;
+	struct tbl **ntblp, **otblp = tp->tbls;
+	int osize = tp->size;
+
+	ntblp = areallocarray(NULL, nsize, sizeof(struct tbl *), tp->areap);
+	for (i = 0; i < nsize; i++)
+		ntblp[i] = NULL;
+	tp->size = nsize;
+	tp->nfree = 7*nsize/10;	/* table can get 70% full */
+	tp->tbls = ntblp;
+	if (otblp == NULL)
+		return;
+	for (i = 0; i < osize; i++)
+		if ((tblp = otblp[i]) != NULL) {
+			if ((tblp->flag&DEFINED)) {
+				for (p = &ntblp[hash(tblp->name) &
+				    (tp->size-1)]; *p != NULL; p--)
+					if (p == ntblp) /* wrap */
+						p += tp->size;
+				*p = tblp;
+				tp->nfree--;
+			} else if (!(tblp->flag & FINUSE)) {
+				afree(tblp, tp->areap);
+			}
+		}
+	afree(otblp, tp->areap);
+}
+
+/* table */
+/* name to enter */
+/* hash(n) */
+struct tbl *
+ktsearch(struct table *tp, const char *n, unsigned int h)
+{
+	struct tbl **pp, *p;
+
+	if (tp->size == 0)
+		return NULL;
+
+	/* search for name in hashed table */
+	for (pp = &tp->tbls[h & (tp->size-1)]; (p = *pp) != NULL; pp--) {
+		if (*p->name == *n && strcmp(p->name, n) == 0 &&
+		    (p->flag&DEFINED))
+			return p;
+		if (pp == tp->tbls) /* wrap */
+			pp += tp->size;
+	}
+
+	return NULL;
+}
+
+/* table */
+/* name to enter */
+/* hash(n) */
+struct tbl *
+ktenter(struct table *tp, const char *n, unsigned int h)
+{
+	struct tbl **pp, *p;
+	int len;
+
+	if (tp->size == 0)
+		texpand(tp, INIT_TBLS);
+  Search:
+	/* search for name in hashed table */
+	for (pp = &tp->tbls[h & (tp->size-1)]; (p = *pp) != NULL; pp--) {
+		if (*p->name == *n && strcmp(p->name, n) == 0)
+			return p;	/* found */
+		if (pp == tp->tbls) /* wrap */
+			pp += tp->size;
+	}
+
+	if (tp->nfree <= 0) {	/* too full */
+		if (tp->size <= INT_MAX/2)
+			texpand(tp, 2*tp->size);
+		else
+			internal_errorf("too many vars");
+		goto Search;
+	}
+
+	/* create new tbl entry */
+	len = strlen(n) + 1;
+	p = alloc(offsetof(struct tbl, name[0]) + len,
+				 tp->areap);
+	p->flag = 0;
+	p->type = 0;
+	p->areap = tp->areap;
+	p->u2.field = 0;
+	p->u.array = NULL;
+	memcpy(p->name, n, len);
+
+	/* enter in tp->tbls */
+	tp->nfree--;
+	*pp = p;
+	return p;
+}
+
+void
+ktdelete(struct tbl *p)
+{
+	p->flag = 0;
+}
+
+void
+ktwalk(struct tstate *ts, struct table *tp)
+{
+	ts->left = tp->size;
+	ts->next = tp->tbls;
+}
+
+struct tbl *
+ktnext(struct tstate *ts)
+{
+	while (--ts->left >= 0) {
+		struct tbl *p = *ts->next++;
+		if (p != NULL && (p->flag&DEFINED))
+			return p;
+	}
+	return NULL;
+}
+
+static int
+tnamecmp(const void *p1, const void *p2)
+{
+	char *name1 = (*(struct tbl **)p1)->name;
+	char *name2 = (*(struct tbl **)p2)->name;
+	return strcmp(name1, name2);
+}
+
+struct tbl **
+ktsort(struct table *tp)
+{
+	int i;
+	struct tbl **p, **sp, **dp;
+
+	p = areallocarray(NULL, tp->size + 1,
+	    sizeof(struct tbl *), ATEMP);
+	sp = tp->tbls;		/* source */
+	dp = p;			/* dest */
+	for (i = 0; i < tp->size; i++)
+		if ((*dp = *sp++) != NULL && (((*dp)->flag&DEFINED) ||
+		    ((*dp)->flag&ARRAY)))
+			dp++;
+	i = dp - p;
+	qsortp((void**)p, (size_t)i, tnamecmp);
+	p[i] = NULL;
+	return p;
+}
+
+#ifdef PERF_DEBUG /* performance debugging */
+
+void tprintinfo(struct table *tp);
+
+void
+tprintinfo(struct table *tp)
+{
+	struct tbl *te;
+	char *n;
+	unsigned int h;
+	int ncmp;
+	int totncmp = 0, maxncmp = 0;
+	int nentries = 0;
+	struct tstate ts;
+
+	shellf("table size %d, nfree %d\n", tp->size, tp->nfree);
+	shellf("    Ncmp name\n");
+	ktwalk(&ts, tp);
+	while ((te = ktnext(&ts))) {
+		struct tbl **pp, *p;
+
+		h = hash(n = te->name);
+		ncmp = 0;
+
+		/* taken from ktsearch() and added counter */
+		for (pp = &tp->tbls[h & (tp->size-1)]; (p = *pp); pp--) {
+			ncmp++;
+			if (*p->name == *n && strcmp(p->name, n) == 0 &&
+			    (p->flag&DEFINED))
+				break; /* return p; */
+			if (pp == tp->tbls) /* wrap */
+				pp += tp->size;
+		}
+		shellf("    %4d %s\n", ncmp, n);
+		totncmp += ncmp;
+		nentries++;
+		if (ncmp > maxncmp)
+			maxncmp = ncmp;
+	}
+	if (nentries)
+		shellf("  %d entries, worst ncmp %d, avg ncmp %d.%02d\n",
+		    nentries, maxncmp,
+		    totncmp / nentries,
+		    (totncmp % nentries) * 100 / nentries);
+}
+#endif /* PERF_DEBUG */
+
+/*
+ * Miscellany: options, string and pattern helpers
+ */
 
 /*
  * Miscellaneous functions
  */
 
-#include <ctype.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <limits.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
 
-#include "sh.h"
-#include "charclass.h"
 
 short ctypes [UCHAR_MAX+1];	/* type bits for unsigned char */
 static int dropped_privileges;
@@ -21,6 +388,30 @@ static int dropped_privileges;
 static int	do_gmatch(const unsigned char *, const unsigned char *,
 		    const unsigned char *, const unsigned char *);
 static const unsigned char *cclass(const unsigned char *, int);
+
+/*
+ * POSIX character classes, for pattern matching.
+ */
+static const struct cclass {
+	const char *name;
+	int (*isctype)(int);
+} cclasses[] = {
+	{ "alnum",	isalnum },
+	{ "alpha",	isalpha },
+	{ "blank",	isblank },
+	{ "cntrl",	iscntrl },
+	{ "digit",	isdigit },
+	{ "graph",	isgraph },
+	{ "lower",	islower },
+	{ "print",	isprint },
+	{ "punct",	ispunct },
+	{ "space",	isspace },
+	{ "upper",	isupper },
+	{ "xdigit",	isxdigit },
+	{ NULL,		NULL }
+};
+
+#define NCCLASSES	(sizeof(cclasses) / sizeof(cclasses[0]) - 1)
 
 /*
  * Fast character classes
@@ -126,13 +517,9 @@ const struct option sh_options[] = {
 	{ "bgnice",	  0,		OF_ANY },
 	{ NULL,	'c',	    OF_CMDLINE },
 	{ "csh-history",  0,		OF_ANY }, /* non-standard */
-#ifdef EMACS
 	{ "emacs",	  0,		OF_ANY },
-#endif
 	{ "errexit",	'e',		OF_ANY },
-#ifdef EMACS
 	{ "gmacs",	  0,		OF_ANY },
-#endif
 	{ "ignoreeof",	  0,		OF_ANY },
 	{ "interactive",'i',	    OF_CMDLINE },
 	{ "keyword",	'k',		OF_ANY },
@@ -155,13 +542,11 @@ const struct option sh_options[] = {
 	{ "stdin",	's',	    OF_CMDLINE }, /* pseudo non-standard */
 	{ "trackall",	'h',		OF_ANY },
 	{ "verbose",	'v',		OF_ANY },
-#ifdef VI
 	{ "vi",		  0,		OF_ANY },
 	{ "viraw",	  0,		OF_ANY }, /* no effect */
 	{ "vi-show8",	  0,		OF_ANY }, /* non-standard */
 	{ "vi-tabcomplete",  0,		OF_ANY }, /* non-standard */
 	{ "vi-esccomplete",  0,		OF_ANY }, /* non-standard */
-#endif
 	{ "xtrace",	'x',		OF_ANY },
 	/* Anonymous flags: used internally by shell only
 	 * (not visible to user)
@@ -273,26 +658,18 @@ change_flag(enum sh_flag f,
 			j_change();
 	} else
 	if (0
-#ifdef VI
 	    || f == FVI
-#endif /* VI */
-#ifdef EMACS
 	    || f == FEMACS || f == FGMACS
-#endif /* EMACS */
 	   )
 	{
 		if (newval) {
-#ifdef VI
 			Flag(FVI) = 0;
-#endif /* VI */
-#ifdef EMACS
 			Flag(FEMACS) = Flag(FGMACS) = 0;
-#endif /* EMACS */
 			Flag(f) = newval;
 		}
 	} else
 	/* Turning off -p? */
-	if (f == FPRIVILEGED && oldval && !newval && oksh_issetugid() &&
+	if (f == FPRIVILEGED && oldval && !newval && sh_issetugid() &&
 	    !dropped_privileges) {
 		gid_t gid = getgid();
 
@@ -300,11 +677,9 @@ change_flag(enum sh_flag f,
 		setgroups(1, &gid);
 		setresuid(ksheuid, ksheuid, ksheuid);
 
-#ifdef HAVE_PLEDGE
 		if (pledge("stdio rpath wpath cpath fattr flock getpw proc "
 		    "exec tty", NULL) == -1)
 			bi_errorf("pledge fail");
-#endif
 
 		dropped_privileges = 1;
 	} else if (f == FPOSIX && newval) {
@@ -1152,4 +1527,480 @@ ksh_get_wd(char *buf, int bsize)
 	}
 
 	return ret;
+}
+
+/*
+ * Path name manipulation and $PATH searching
+ */
+
+/* Like basename(3), but never modifies or allocates. */
+const char *
+sh_basename(const char *path)
+{
+	const char *s = strrchr(path, '/');
+
+	if (s == NULL)
+		return path;
+	return s[1] != '\0' ? s + 1 : "/";
+}
+
+/*
+ *	Contains a routine to search a : separated list of
+ *	paths (a la CDPATH) and make appropriate file names.
+ *	Also contains a routine to simplify .'s and ..'s out of
+ *	a path name.
+ *
+ *	Larry Bouzane (larry@cs.mun.ca)
+ */
+
+static char	*do_phys_path(XString *, char *, const char *);
+
+/*
+ *	Makes a filename into result using the following algorithm.
+ *	- make result NULL
+ *	- if file starts with '/', append file to result & set cdpathp to NULL
+ *	- if file starts with ./ or ../ append cwd and file to result
+ *	  and set cdpathp to NULL
+ *	- if the first element of cdpathp doesnt start with a '/' xx or '.' xx
+ *	  then cwd is appended to result.
+ *	- the first element of cdpathp is appended to result
+ *	- file is appended to result
+ *	- cdpathp is set to the start of the next element in cdpathp (or NULL
+ *	  if there are no more elements.
+ *	The return value indicates whether a non-null element from cdpathp
+ *	was appended to result.
+ */
+int
+make_path(const char *cwd, const char *file,
+    char **cdpathp,		/* & of : separated list */
+    XString *xsp,
+    int *phys_pathp)
+{
+	int	rval = 0;
+	int	use_cdpath = 1;
+	char	*plist;
+	int	len;
+	int	plen = 0;
+	char	*xp = Xstring(*xsp, xp);
+
+	if (!file)
+		file = null;
+
+	if (file[0] == '/') {
+		*phys_pathp = 0;
+		use_cdpath = 0;
+	} else {
+		if (file[0] == '.') {
+			char c = file[1];
+
+			if (c == '.')
+				c = file[2];
+			if (c == '/' || c == '\0')
+				use_cdpath = 0;
+		}
+
+		plist = *cdpathp;
+		if (!plist)
+			use_cdpath = 0;
+		else if (use_cdpath) {
+			char *pend;
+
+			for (pend = plist; *pend && *pend != ':'; pend++)
+				;
+			plen = pend - plist;
+			*cdpathp = *pend ? ++pend : NULL;
+		}
+
+		if ((use_cdpath == 0 || !plen || plist[0] != '/') &&
+		    (cwd && *cwd)) {
+			len = strlen(cwd);
+			XcheckN(*xsp, xp, len);
+			memcpy(xp, cwd, len);
+			xp += len;
+			if (cwd[len - 1] != '/')
+				Xput(*xsp, xp, '/');
+		}
+		*phys_pathp = Xlength(*xsp, xp);
+		if (use_cdpath && plen) {
+			XcheckN(*xsp, xp, plen);
+			memcpy(xp, plist, plen);
+			xp += plen;
+			if (plist[plen - 1] != '/')
+				Xput(*xsp, xp, '/');
+			rval = 1;
+		}
+	}
+
+	len = strlen(file) + 1;
+	XcheckN(*xsp, xp, len);
+	memcpy(xp, file, len);
+
+	if (!use_cdpath)
+		*cdpathp = NULL;
+
+	return rval;
+}
+
+/*
+ * Simplify pathnames containing "." and ".." entries.
+ * ie, simplify_path("/a/b/c/./../d/..") returns "/a/b"
+ */
+void
+simplify_path(char *path)
+{
+	char	*cur;
+	char	*t;
+	int	isrooted;
+	char	*very_start = path;
+	char	*start;
+
+	if (!*path)
+		return;
+
+	if ((isrooted = (path[0] == '/')))
+		very_start++;
+
+	/* Before			After
+	 *  /foo/			/foo
+	 *  /foo/../../bar		/bar
+	 *  /foo/./blah/..		/foo
+	 *  .				.
+	 *  ..				..
+	 *  ./foo			foo
+	 *  foo/../../../bar		../../bar
+	 */
+
+	for (cur = t = start = very_start; ; ) {
+		/* treat multiple '/'s as one '/' */
+		while (*t == '/')
+			t++;
+
+		if (*t == '\0') {
+			if (cur == path)
+				/* convert empty path to dot */
+				*cur++ = '.';
+			*cur = '\0';
+			break;
+		}
+
+		if (t[0] == '.') {
+			if (!t[1] || t[1] == '/') {
+				t += 1;
+				continue;
+			} else if (t[1] == '.' && (!t[2] || t[2] == '/')) {
+				if (!isrooted && cur == start) {
+					if (cur != very_start)
+						*cur++ = '/';
+					*cur++ = '.';
+					*cur++ = '.';
+					start = cur;
+				} else if (cur != start)
+					while (--cur > start && *cur != '/')
+						;
+				t += 2;
+				continue;
+			}
+		}
+
+		if (cur != very_start)
+			*cur++ = '/';
+
+		/* find/copy next component of pathname */
+		while (*t && *t != '/')
+			*cur++ = *t++;
+	}
+}
+
+
+void
+set_current_wd(char *path)
+{
+	int len;
+	char *p = path;
+
+	if (!p && !(p = ksh_get_wd(NULL, 0)))
+		p = null;
+
+	len = strlen(p) + 1;
+
+	if (len > current_wd_size)
+		current_wd = aresize(current_wd, current_wd_size = len, APERM);
+	memcpy(current_wd, p, len);
+	if (p != path && p != null)
+		afree(p, ATEMP);
+}
+
+char *
+get_phys_path(const char *path)
+{
+	XString xs;
+	char *xp;
+
+	Xinit(xs, xp, strlen(path) + 1, ATEMP);
+
+	xp = do_phys_path(&xs, xp, path);
+
+	if (!xp)
+		return NULL;
+
+	if (Xlength(xs, xp) == 0)
+		Xput(xs, xp, '/');
+	Xput(xs, xp, '\0');
+
+	return Xclose(xs, xp);
+}
+
+static char *
+do_phys_path(XString *xsp, char *xp, const char *path)
+{
+	const char *p, *q;
+	int len, llen;
+	int savepos;
+	char lbuf[PATH_MAX];
+
+	Xcheck(*xsp, xp);
+	for (p = path; p; p = q) {
+		while (*p == '/')
+			p++;
+		if (!*p)
+			break;
+		len = (q = strchr(p, '/')) ? (size_t)(q - p) : strlen(p);
+		if (len == 1 && p[0] == '.')
+			continue;
+		if (len == 2 && p[0] == '.' && p[1] == '.') {
+			while (xp > Xstring(*xsp, xp)) {
+				xp--;
+				if (*xp == '/')
+					break;
+			}
+			continue;
+		}
+
+		savepos = Xsavepos(*xsp, xp);
+		Xput(*xsp, xp, '/');
+		XcheckN(*xsp, xp, len + 1);
+		memcpy(xp, p, len);
+		xp += len;
+		*xp = '\0';
+
+		llen = readlink(Xstring(*xsp, xp), lbuf, sizeof(lbuf) - 1);
+		if (llen == -1) {
+			/* EINVAL means it wasn't a symlink... */
+			if (errno != EINVAL)
+				return NULL;
+			continue;
+		}
+		lbuf[llen] = '\0';
+
+		/* If absolute path, start from scratch.. */
+		xp = lbuf[0] == '/' ? Xstring(*xsp, xp) :
+		    Xrestpos(*xsp, xp, savepos);
+		if (!(xp = do_phys_path(xsp, xp, lbuf)))
+			return NULL;
+	}
+	return xp;
+}
+
+/*
+ * $MAIL, $MAILPATH and $MAILCHECK
+ */
+
+/*
+ * Mailbox checking code by Robert J. Gibson, adapted for PD ksh by
+ * John R. MacMillan
+ */
+
+
+
+
+#define MBMESSAGE	"you have mail in $_"
+
+typedef struct mbox {
+	struct mbox    *mb_next;	/* next mbox in list */
+	char	       *mb_path;	/* path to mail file */
+	char	       *mb_msg;		/* to announce arrival of new mail */
+	time_t		mb_mtime;	/* mtime of mail file */
+} mbox_t;
+
+/*
+ * $MAILPATH is a linked list of mboxes.  $MAIL is a treated as a
+ * special case of $MAILPATH, where the list has only one node.  The
+ * same list is used for both since they are exclusive.
+ */
+
+static mbox_t	*mplist;
+static mbox_t	mbox;
+static struct	timespec mlastchkd;	/* when mail was last checked */
+static time_t	mailcheck_interval;
+
+static void	munset(mbox_t *); /* free mlist and mval */
+static mbox_t * mballoc(char *, char *); /* allocate a new mbox */
+static void	mprintit(mbox_t *);
+
+void
+mcheck(void)
+{
+	mbox_t		*mbp;
+	struct timespec	 elapsed, now;
+	struct tbl	*vp;
+	struct stat	 stbuf;
+	static int	 first = 1;
+
+	if (mplist)
+		mbp = mplist;
+	else if ((vp = global("MAIL")) && (vp->flag & ISSET))
+		mbp = &mbox;
+	else
+		mbp = NULL;
+	if (mbp == NULL)
+		return;
+
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	if (first) {
+		mlastchkd = now;
+		first = 0;
+	}
+	timespecsub(&now, &mlastchkd, &elapsed);
+	if (elapsed.tv_sec >= mailcheck_interval) {
+		mlastchkd = now;
+
+		while (mbp) {
+			if (mbp->mb_path && stat(mbp->mb_path, &stbuf) == 0 &&
+			    S_ISREG(stbuf.st_mode)) {
+				if (stbuf.st_size &&
+				    mbp->mb_mtime != stbuf.st_mtime &&
+				    stbuf.st_atime <= stbuf.st_mtime)
+					mprintit(mbp);
+				mbp->mb_mtime = stbuf.st_mtime;
+			} else {
+				/*
+				 * Some mail readers remove the mail
+				 * file if all mail is read.  If file
+				 * does not exist, assume this is the
+				 * case and set mtime to zero.
+				 */
+				mbp->mb_mtime = 0;
+			}
+			mbp = mbp->mb_next;
+		}
+	}
+}
+
+void
+mcset(int64_t interval)
+{
+	mailcheck_interval = interval;
+}
+
+void
+mbset(char *p)
+{
+	struct stat	stbuf;
+
+	afree(mbox.mb_msg, APERM);
+	afree(mbox.mb_path, APERM);
+	/* Save a copy to protect from export (which munges the string) */
+	mbox.mb_path = str_save(p, APERM);
+	mbox.mb_msg = NULL;
+	if (p && stat(p, &stbuf) == 0 && S_ISREG(stbuf.st_mode))
+		mbox.mb_mtime = stbuf.st_mtime;
+	else
+		mbox.mb_mtime = 0;
+}
+
+void
+mpset(char *mptoparse)
+{
+	mbox_t	*mbp;
+	char	*mpath, *mmsg, *mval;
+	char *p;
+
+	munset( mplist );
+	mplist = NULL;
+	mval = str_save(mptoparse, APERM);
+	while (mval) {
+		mpath = mval;
+		if ((mval = strchr(mval, ':')) != NULL) {
+			*mval = '\0';
+			mval++;
+		}
+		/* POSIX/bourne-shell say file%message */
+		for (p = mpath; (mmsg = strchr(p, '%')); ) {
+			/* a literal percent? (POSIXism) */
+			if (mmsg > mpath && mmsg[-1] == '\\') {
+				/* use memmove() to avoid overlap problems */
+				memmove(mmsg - 1, mmsg, strlen(mmsg) + 1);
+				p = mmsg;
+				continue;
+			}
+			break;
+		}
+		/* at&t ksh says file?message */
+		if (!mmsg && !Flag(FPOSIX))
+			mmsg = strchr(mpath, '?');
+		if (mmsg) {
+			*mmsg = '\0';
+			mmsg++;
+			if (*mmsg == '\0')
+				mmsg = NULL;
+		}
+		if (*mpath == '\0')
+			continue;
+		mbp = mballoc(mpath, mmsg);
+		mbp->mb_next = mplist;
+		mplist = mbp;
+	}
+}
+
+static void
+munset(mbox_t *mlist)
+{
+	mbox_t	*mbp;
+
+	while (mlist != NULL) {
+		mbp = mlist;
+		mlist = mbp->mb_next;
+		if (!mlist)
+			afree(mbp->mb_path, APERM);
+		afree(mbp, APERM);
+	}
+}
+
+static mbox_t *
+mballoc(char *p, char *m)
+{
+	struct stat	stbuf;
+	mbox_t	*mbp;
+
+	mbp = alloc(sizeof(mbox_t), APERM);
+	mbp->mb_next = NULL;
+	mbp->mb_path = p;
+	mbp->mb_msg = m;
+	if (stat(mbp->mb_path, &stbuf) == 0 && S_ISREG(stbuf.st_mode))
+		mbp->mb_mtime = stbuf.st_mtime;
+	else
+		mbp->mb_mtime = 0;
+	return(mbp);
+}
+
+static void
+mprintit(mbox_t *mbp)
+{
+	struct tbl	*vp;
+
+#if 0
+	/*
+	 * I doubt this $_ overloading is bad in /bin/sh mode.  Anyhow, we
+	 * crash as the code looks now if we do not set vp.  Now, this is
+	 * easy to fix too, but I'd like to see what POSIX says before doing
+	 * a change like that.
+	 */
+	if (!Flag(FSH))
+#endif
+		/* Ignore setstr errors here (arbitrary) */
+		setstr((vp = local("_", false)), mbp->mb_path, KSH_RETURN_ERROR);
+
+	shellf("%s\n", substitute(mbp->mb_msg ? mbp->mb_msg : MBMESSAGE, 0));
+
+	unset(vp, 0);
 }

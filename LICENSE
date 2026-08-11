@@ -1,0 +1,30 @@
+NEXTSH Shell
+
+Copyright (C) 1986-1999 Eric Gisin, John R. MacMillan, Simon J. Gerraty,
+			Michael Rendell and the pdksh contributors
+Copyright (C) 1996-2026 The OpenBSD project
+Copyright (C) 2015-2026 Brian Callahan <bcallah at openbsd dot org>
+Copyright (C) 2026-2026 Kyryl Melekhin <k dot melekhin at gmail dot com>
+
+The Korn shell this program descends from was placed in the public domain
+by its authors, and so is this program.  To the extent possible under law,
+the authors have waived all copyright and related or neighboring rights to
+NEXTSH.  You may use, copy, modify, distribute and sell this software, in
+source or binary form, for any purpose, commercial or non-commercial, and
+by any means, with or without attribution.
+
+The only exceptions are the library replacements bundled in compat.c, which
+are ISC or BSD licensed.  Their notices are reproduced beside the code they
+cover and must be retained; they read, in substance:
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.

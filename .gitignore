@@ -1,5 +1,10 @@
-oksh
-Makefile
-README
 *.o
-pconfig.h
+*.exe
+*.gcda
+*.profraw
+default.profdata
+callgrind.out.*
+cachegrind.out.*
+tags
+nextsh
+CLAUDE.md

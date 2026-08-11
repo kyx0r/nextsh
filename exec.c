@@ -1,22 +1,15 @@
-/*	$OpenBSD: exec.c,v 1.77 2023/06/21 22:22:08 millert Exp $	*/
+/*
+ * nextsh: command execution.
+ *
+ * Public domain, except where noted.
+ */
 
 /*
  * execute command tree
  */
 
-#include <sys/stat.h>
 
-#include <ctype.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <paths.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
 
-#include "sh.h"
-#include "c_test.h"
 
 /* Does ps4 get parameter substitutions done? */
 # define PS4_SUBSTITUTE(s)	substitute((s), 0)

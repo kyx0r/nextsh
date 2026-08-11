@@ -1,21 +1,36 @@
-/*	$OpenBSD: main.c,v 1.100 2023/07/23 23:42:03 kn Exp $	*/
+/*
+ * nextsh: a small, fast, portable Korn shell.
+ *
+ * Descended from the public domain Bourne/Korn shell (pdksh) by way of
+ * OpenBSD ksh(1).  The whole shell is one translation unit: this file is
+ * the only one a compiler ever sees.
+ */
+
+#include "sh.h"
+
+#include "compat.c"
+#include "misc.c"
+#include "io.c"
+#include "parse.c"
+#include "eval.c"
+#include "exec.c"
+#include "jobs.c"
+#include "edit.c"
+#include "builtins.c"
+
+/*
+ * $KSH_VERSION and $NEXTSH_VERSION
+ */
+
+const char ksh_version[] = "@(#)PD KSH v5.2.14 99/07/13.2";
+const char nextsh_version[] = "nextsh 1.0";
 
 /*
  * startup, main loop, environments and error handling
  */
 
-#include <sys/stat.h>
 
-#include <errno.h>
-#include <fcntl.h>
-#include <paths.h>
-#include <pwd.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
 
-#include "sh.h"
 
 extern char **environ;
 
@@ -81,18 +96,12 @@ static const char initifs[] = "IFS= \t\n";
 static const char initsubs[] = "${PS2=> } ${PS3=#? } ${PS4=+ }";
 
 static const char *initcoms [] = {
-#ifndef SMALL
 	"typeset", "-r", "KSH_VERSION", NULL,
-	"typeset", "-r", "OKSH_VERSION", NULL,
-#endif /* SMALL */
+	"typeset", "-r", "NEXTSH_VERSION", NULL,
 	"typeset", "-x", "SHELL", "PATH", "HOME", "PWD", "OLDPWD", NULL,
 	"typeset", "-ir", "PPID", NULL,
 	"typeset", "-i", "OPTIND=1", NULL,
-#ifndef SMALL
 	"eval", "typeset -i RANDOM MAILCHECK=\"${MAILCHECK-600}\" SECONDS=\"${SECONDS-0}\" TMOUT=\"${TMOUT-0}\"", NULL,
-#else
-	"eval", "typeset -i RANDOM SECONDS=\"${SECONDS-0}\" TMOUT=\"${TMOUT-0}\"", NULL,
-#endif /* SMALL */
 	"alias",
 	 /* Standard ksh aliases */
 	  "hash=alias -t",	/* not "alias -t --": hash -r needs to work */
@@ -117,9 +126,7 @@ static const char *initcoms [] = {
 
 char username[_PW_NAME_LEN + 1];
 
-#ifndef SMALL
 #define version_param  (initcoms[2])
-#endif /* SMALL */
 
 /* The shell uses its own variation on argv, to build variables like
  * $0 and $@.
@@ -155,8 +162,7 @@ main(int argc, char *argv[])
 
 	kshname = argv[0];
 
-#ifdef HAVE_PLEDGE
-	if (issetugid()) { /* could later drop privileges */
+	if (sh_issetugid()) { /* could later drop privileges */
 		if (pledge("stdio rpath wpath cpath fattr flock getpw proc "
 		    "exec tty id", NULL) == -1) {
 			perror("pledge");
@@ -169,7 +175,6 @@ main(int argc, char *argv[])
 			exit(1);
 		}
 	}
-#endif
 
 	ainit(&aperm);		/* initialize permanent Area */
 
@@ -243,35 +248,19 @@ main(int argc, char *argv[])
 	 */
 	Flag(FBRACEEXPAND) = 1;
 
-	/* set posix flag just before environment so that it will have
-	 * exactly the same effect as the POSIXLY_CORRECT environment
-	 * variable.  If this needs to be done sooner to ensure correct posix
-	 * operation, an initial scan of the environment will also have
-	 * done sooner.
-	 */
-#ifdef POSIXLY_CORRECT
-	change_flag(FPOSIX, OF_SPECIAL, 1);
-#endif /* POSIXLY_CORRECT */
-
 	/* Check to see if we're /bin/sh. */
 	if (!strcmp(kshname, "sh") || !strcmp(kshname, "-sh") ||
 	    (strlen(kshname) >= 3 &&
 	    !strcmp(&kshname[strlen(kshname) - 3], "/sh"))) {
 		Flag(FSH) = 1;
-#ifndef SMALL
 		version_param = "SH_VERSION";
-#endif /* SMALL */
 	}
 
 	/* Set edit mode to emacs by default, may be overridden
 	 * by the environment or the user.  Also, we want tab completion
 	 * on in vi by default. */
-#if defined(EMACS)
 	change_flag(FEMACS, OF_SPECIAL, 1);
-#endif /* EMACS */
-#if defined(VI)
 	Flag(FVITABCOMPLETE) = 1;
-#endif /* VI */
 
 	/* import environment */
 	if (environ != NULL)
@@ -309,11 +298,9 @@ main(int argc, char *argv[])
 	}
 	ppid = getppid();
 	setint(global("PPID"), (int64_t) ppid);
-#ifndef SMALL
 	/* setstr can't fail here */
 	setstr(global(version_param), ksh_version, KSH_RETURN_ERROR);
-	setstr(global("OKSH_VERSION"), "oksh 7.9", KSH_RETURN_ERROR);
-#endif /* SMALL */
+	setstr(global("NEXTSH_VERSION"), nextsh_version, KSH_RETURN_ERROR);
 
 	/* execute initialization statements */
 	for (wp = (char**) initcoms; *wp != NULL; wp++) {
@@ -421,12 +408,6 @@ main(int argc, char *argv[])
 
 		/* include $ENV */
 		env_file = str_val(global("ENV"));
-
-#ifdef DEFAULT_ENV
-		/* If env isn't set, include default environment */
-		if (env_file == null)
-			env_file = DEFAULT_ENV;
-#endif /* DEFAULT_ENV */
 		env_file = substitute(env_file, DOTILDE);
 		if (*env_file != '\0')
 			include(env_file, 0, NULL, 1);
@@ -623,9 +604,7 @@ shell(Source *volatile s, volatile int toplevel)
 		if (interactive) {
 			got_sigwinch = 1;
 			j_notify();
-#ifndef SMALL
 			mcheck();
-#endif /* SMALL */
 			set_prompt(PS1);
 		}
 
@@ -840,13 +819,7 @@ is_restricted(char *name)
 
 	if ((p = strrchr(name, '/')))
 		name = p + 1;
-	/* accepts rsh, rksh, rpdksh, pdrksh */
-	if (strcmp(name, "rsh") && \
-		strcmp(name, "rksh") && \
-		strcmp(name, "rpdksh") && \
-		strcmp(name, "pdrksh"))
-		return(0);
-	else
-		return(1);
-
+	/* accepts rsh, rksh, rnextsh */
+	return !strcmp(name, "rsh") || !strcmp(name, "rksh") ||
+	    !strcmp(name, "rnextsh");
 }
