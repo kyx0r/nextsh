@@ -559,18 +559,18 @@ int
 stravis(char **outp, const char *src, int flag)
 {
 	char *buf;
-	int len, serrno;
+	int len;
 
+	/*
+	 * The buffer is worst-case sized (4 bytes per input byte) and is
+	 * not shrunk afterwards: the result is short lived and shrinking
+	 * would mean using the original pointer after realloc().
+	 */
 	buf = reallocarray(NULL, 4, strlen(src) + 1);
 	if (buf == NULL)
 		return -1;
 	len = estrvis(buf, src, flag);
-	serrno = errno;
-	*outp = realloc(buf, len + 1);
-	if (*outp == NULL) {
-		*outp = buf;
-		errno = serrno;
-	}
+	*outp = buf;
 	return (len);
 }
 

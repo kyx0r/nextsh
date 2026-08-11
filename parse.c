@@ -961,10 +961,9 @@ pushs(int type, Area *areap)
 	s->flags = 0;
 	s->next = NULL;
 	s->areap = areap;
-	if (type == SFILE || type == SSTDIN) {
-		char *dummy;
-		Xinit(s->xs, dummy, 256, s->areap);
-	} else
+	if (type == SFILE || type == SSTDIN)
+		Xinitn(s->xs, 256, s->areap);
+	else
 		memset(&s->xs, 0, sizeof(s->xs));
 	return s;
 }
@@ -1207,7 +1206,7 @@ dopprompt(const char *sp, int ntruncate, const char **spp, int doprint)
 {
 	char strbuf[1024], tmpbuf[1024], *p, *str, nbuf[32], delimiter = '\0';
 	int len, c, n, totlen = 0, indelimit = 0, counting = 1, delimitthis;
-	const char *cp = sp;
+	const char *cp = sp, *cq;
 	struct tm *tm;
 	time_t t;
 
@@ -1250,8 +1249,8 @@ dopprompt(const char *sp, int ntruncate, const char **spp, int doprint)
 					strbuf[0] = '\0';
 				break;
 			case 'D': /* '\' 'D' '{' strftime format '}' */
-				p = strchr(cp + 2, '}');
-				if (cp[1] != '{' || p == NULL) {
+				cq = strchr(cp + 2, '}');
+				if (cp[1] != '{' || cq == NULL) {
 					snprintf(strbuf, sizeof strbuf,
 					    "\\%c", *cp);
 					break;
@@ -1351,12 +1350,12 @@ dopprompt(const char *sp, int ntruncate, const char **spp, int doprint)
 				strlcpy(strbuf, username, sizeof strbuf);
 				break;
 			case 'v':	/* '\' 'v' version (short) */
-				p = strchr(ksh_version, ' ');
-				if (p)
-					p = strchr(p + 1, ' ');
-				if (p) {
-					p++;
-					strlcpy(strbuf, p, sizeof strbuf);
+				cq = strchr(ksh_version, ' ');
+				if (cq)
+					cq = strchr(cq + 1, ' ');
+				if (cq) {
+					cq++;
+					strlcpy(strbuf, cq, sizeof strbuf);
 					p = strchr(strbuf, ' ');
 					if (p)
 						*p = '\0';

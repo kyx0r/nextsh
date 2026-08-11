@@ -212,7 +212,7 @@ set_editmode(const char *ed)
 		FEMACS, FGMACS,
 		FVI,
 	};
-	char *rcp;
+	const char *rcp;
 	unsigned int ele;
 
 	if ((rcp = strrchr(ed, '/')))
