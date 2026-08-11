@@ -1,7 +1,7 @@
 NEXTSH(1)                   General Commands Manual                  NEXTSH(1)
 
 NAME
-     nextsh, rnextsh - next Korn shell
+     nextsh - A small Korn shell
 
 SYNOPSIS
      nextsh [-+abCefhiklmnpruvXx] [-+o option]
@@ -39,10 +39,8 @@ DESCRIPTION
              Clearing the privileged option causes the shell to set its
              effective user ID (group ID) to its real user ID (group ID).
 
-     -r      Restricted shell.  A shell is "restricted" if this option is
-             used; if the basename the shell was invoked with was "rksh" or
-             "rnextsh"; or if the SHELL parameter is set to "rksh" or
-             "rnextsh".  The following restrictions come into effect after the
+     -r      Restricted shell.  A shell is "restricted" only if this option is
+             used.  The following restrictions come into effect after the
              shell processes any profile and ENV files:
 
              o   The cd command is disabled.
@@ -92,10 +90,10 @@ DESCRIPTION
      no command is executed.
 
      nextsh behaves identically no matter what name it is invoked with.  The
-     only exceptions are the two that carry a contract with the system rather
-     than a preference: a leading `-' marks a login shell, and the restricted
-     names described under -r.  In particular, invoking nextsh as sh does not
-     quietly turn off parts of the language, as other Korn shells do.
+     only exception is the one that carries a contract with the system rather
+     than a preference: a leading `-' marks a login shell.  In particular,
+     invoking nextsh as sh does not quietly turn off parts of the language, as
+     other Korn shells do.
 
    Command syntax
      The shell begins parsing its input by breaking it into words.  Words,
