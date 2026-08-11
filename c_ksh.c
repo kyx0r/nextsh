@@ -1413,6 +1413,7 @@ const struct builtin kshbuiltins [] = {
 	{"+kill", c_kill},
 	{"let", c_let},
 	{"print", c_print},
+	{"+printf", c_printf},
 	{"pwd", c_pwd},
 	{"*=readonly", c_typeset},
 	{"type", c_type},

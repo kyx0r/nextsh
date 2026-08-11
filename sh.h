@@ -382,6 +382,7 @@ void	afree(void *, Area *);
 int	c_cd(char **);
 int	c_pwd(char **);
 int	c_print(char **);
+int	c_printf(char **);
 int	c_whence(char **);
 int	c_command(char **);
 int	c_type(char **);
