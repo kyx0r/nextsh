@@ -197,6 +197,19 @@ occurred during the execution of a script.
 In the absence of fatal errors,
 the exit status is that of the last command executed, or zero, if no
 command is executed.
+.Pp
+.Nm
+behaves identically no matter what name it is invoked with.
+The only exceptions are the two that carry a contract with the system
+rather than a preference: a leading
+.Sq -
+marks a login shell, and the restricted names described under
+.Fl r .
+In particular, invoking
+.Nm
+as
+.Nm sh
+does not quietly turn off parts of the language, as other Korn shells do.
 .Ss Command syntax
 The shell begins parsing its input by breaking it into
 .Em words .
@@ -2572,46 +2585,6 @@ alias a='for ' i='j'
 a i in 1 2; do echo i=$i j=$j; done
 .Ed
 .El
-.Ss Strict Bourne shell mode
-When the
-.Ic sh
-option is enabled (see the
-.Ic set
-command),
-.Nm
-will behave like
-.Xr sh 1
-in the following ways:
-.Bl -bullet
-.It
-The parameter
-.Ic $_
-is not set to:
-.Pp
-.Bl -dash -compact
-.It
-the expanded alias' full program path after entering commands
-that are tracked aliases
-.It
-the last argument on the command line after entering external
-commands
-.It
-the file that changed when
-.Ev MAILPATH
-is set to monitor a mailbox
-.El
-.It
-File descriptors are left untouched when executing
-.Ic exec
-with no arguments.
-.It
-Backslash-escaped special characters are not substituted in
-.Ev PS1 .
-.It
-Sequences of
-.Sq ((...))
-are not interpreted as arithmetic expressions.
-.El
 .Ss Command execution
 After evaluation of command-line arguments, redirections, and parameter
 assignments, the type of command is determined: a special built-in, a
@@ -3683,10 +3656,6 @@ above.
 The shell is a restricted shell.
 This option can only be used when the shell is invoked.
 See above for a description of what this means.
-.It Ic sh
-Enable strict Bourne shell mode (see
-.Sx Strict Bourne shell mode
-above).
 .It Ic vi
 Enable
 .Xr vi 1 Ns -like
