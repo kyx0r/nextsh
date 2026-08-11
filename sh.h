@@ -365,7 +365,6 @@ enum sh_flag {
 	FPOSIX,		/* -o posix: be posixly correct */
 	FPRIVILEGED,	/* -p: use suid_profile */
 	FRESTRICTED,	/* -r: restricted shell */
-	FSH,		/* -o sh: favor sh behaviour */
 	FSTDIN,		/* -s: (invocation) parse stdin */
 	FTRACKALL,	/* -h: create tracked aliases for all commands */
 	FVERBOSE,	/* -v: echo input */

@@ -248,14 +248,6 @@ main(int argc, char *argv[])
 	 */
 	Flag(FBRACEEXPAND) = 1;
 
-	/* Check to see if we're /bin/sh. */
-	if (!strcmp(kshname, "sh") || !strcmp(kshname, "-sh") ||
-	    (strlen(kshname) >= 3 &&
-	    !strcmp(&kshname[strlen(kshname) - 3], "/sh"))) {
-		Flag(FSH) = 1;
-		version_param = "SH_VERSION";
-	}
-
 	/* Set edit mode to emacs by default, may be overridden
 	 * by the environment or the user.  Also, we want tab completion
 	 * on in vi by default. */

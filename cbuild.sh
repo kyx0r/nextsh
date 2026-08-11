@@ -77,7 +77,7 @@ install() {
 }
 
 check() {
-    [ -x ./sh ] || build
+    build
     log "$G" "Entering step: \"Check \"${BASE##*/}\"\""
     fail=0
     t() { # t <name> <script> <expected>
