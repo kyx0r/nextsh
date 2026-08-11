@@ -538,7 +538,6 @@ const struct option sh_options[] = {
 	{ "posix",	  0,		OF_ANY }, /* non-standard */
 	{ "privileged",	'p',		OF_ANY },
 	{ "restricted",	'r',	    OF_CMDLINE },
-	{ "sh",		  0,		OF_ANY }, /* non-standard */
 	{ "stdin",	's',	    OF_CMDLINE }, /* pseudo non-standard */
 	{ "trackall",	'h',		OF_ANY },
 	{ "verbose",	'v',		OF_ANY },
@@ -1988,17 +1987,8 @@ mprintit(mbox_t *mbp)
 {
 	struct tbl	*vp;
 
-#if 0
-	/*
-	 * I doubt this $_ overloading is bad in /bin/sh mode.  Anyhow, we
-	 * crash as the code looks now if we do not set vp.  Now, this is
-	 * easy to fix too, but I'd like to see what POSIX says before doing
-	 * a change like that.
-	 */
-	if (!Flag(FSH))
-#endif
-		/* Ignore setstr errors here (arbitrary) */
-		setstr((vp = local("_", false)), mbp->mb_path, KSH_RETURN_ERROR);
+	/* Ignore setstr errors here (arbitrary) */
+	setstr((vp = local("_", false)), mbp->mb_path, KSH_RETURN_ERROR);
 
 	shellf("%s\n", substitute(mbp->mb_msg ? mbp->mb_msg : MBMESSAGE, 0));
 

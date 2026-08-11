@@ -837,12 +837,11 @@ c_exec(char **wp)
 			if (genv->savefd[i] > 0)
 				close(genv->savefd[i]);
 			/*
-			 * For ksh keep anything > 2 private,
-			 * for sh, let them be (POSIX says what
-			 * happens is unspecified and the bourne shell
-			 * keeps them open).
+			 * Keep anything > 2 private.  POSIX leaves
+			 * this unspecified; the Bourne shell left
+			 * them open.
 			 */
-			if (!Flag(FSH) && i > 2 && genv->savefd[i])
+			if (i > 2 && genv->savefd[i])
 				fcntl(i, F_SETFD, FD_CLOEXEC);
 		}
 		genv->savefd = NULL;
