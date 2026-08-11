@@ -1,7 +1,5 @@
 /*
  * nextsh: everything to do with other processes and signals.
- *
- * Public domain, except where noted.
  */
 
 /*

@@ -1,7 +1,5 @@
 /*
  * nextsh: the front end - lexer, parser and command tree.
- *
- * Public domain, except where noted.
  */
 
 /*

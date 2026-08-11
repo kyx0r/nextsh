@@ -1,14 +1,10 @@
 /*
  * nextsh: housekeeping - memory, tables, options, paths and mail.
- *
- * Public domain, except where noted.
  */
 
 /*
  * Area based allocation, built on malloc/free
  */
-
-/* Public domain, like most of the rest of ksh */
 
 /*
  * area-based allocation built on malloc/free

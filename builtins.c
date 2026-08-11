@@ -1,7 +1,5 @@
 /*
  * nextsh: the builtin commands.
- *
- * Public domain, except where noted.
  */
 
 /*
