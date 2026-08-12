@@ -2613,10 +2613,11 @@ DESCRIPTION
              entered on an empty pattern repeats the previous search.
              delete-char-backward erases the last character of the pattern,
              and erasing all of it returns to the line the search started on.
-             The abort key restores that line and leaves search mode.  Other
-             commands will be executed after leaving search mode.  The history
-             buffer retains only a finite number of lines; the oldest are
-             discarded as necessary.
+             kill-line (^U in both editing modes) erases the whole pattern at
+             once, without leaving search mode.  The abort key restores that
+             line and leaves search mode.  Other commands will be executed
+             after leaving search mode.  The history buffer retains only a
+             finite number of lines; the oldest are discarded as necessary.
 
      search-history-forward: ^S
              As search-history, but searching forward, towards more recent
@@ -2667,7 +2668,7 @@ DESCRIPTION
      o   The _ command is different (in nextsh it is the last argument
          command; in vi(1) it goes to the start of the current line).
 
-     o   The / and G commands move in the opposite direction to the j command.
+     o   The G command moves in the opposite direction to the j command.
 
      o   Commands which don't make sense in a single line editor are not
          available (e.g. screen movement commands and ex(1)-style colon (:)
@@ -2841,20 +2842,6 @@ DESCRIPTION
 
      [n]g    Like G, except if n is not specified, it goes to the most recent
              remembered line.
-
-     [n]/string
-             Search backward through the history for the nth line containing
-             string; if string starts with `^', the remainder of the string
-             must appear at the start of the history line for it to match.
-
-     [n]?string
-             Same as /, except it searches forward through the history.
-
-     [n]n    Search for the nth occurrence of the last search string; the
-             direction of the search is the same as the last search.
-
-     [n]N    Search for the nth occurrence of the last search string; the
-             direction of the search is the opposite of the last search.
 
      Edit commands
 

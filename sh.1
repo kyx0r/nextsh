@@ -4888,6 +4888,9 @@ either one entered on an empty pattern repeats the previous search.
 .Ic delete-char-backward
 erases the last character of the pattern, and erasing all of it returns
 to the line the search started on.
+.Ic kill-line
+(^U in both editing modes) erases the whole pattern at once, without
+leaving search mode.
 The abort key restores that line and leaves search mode.
 Other commands will be executed after leaving search mode.
 The history buffer retains only a finite number of lines; the oldest
@@ -4963,10 +4966,8 @@ it is the last argument command; in
 it goes to the start of the current line).
 .It
 The
-.Ic /
-and
 .Ic G
-commands move in the opposite direction to the
+command moves in the opposite direction to the
 .Ic j
 command.
 .It
@@ -5328,39 +5329,6 @@ Like
 except if
 .Ar n
 is not specified, it goes to the most recent remembered line.
-.It Xo
-.Oo Ar n Oc Ns / Ns Ar string
-.Xc
-Search backward through the history for the
-.Ar n Ns th
-line containing
-.Ar string ;
-if
-.Ar string
-starts with
-.Ql ^ ,
-the remainder of the string must appear at the start of the history line for
-it to match.
-.It Xo
-.Oo Ar n Oc Ns \&? Ns Ar string
-.Xc
-Same as
-.Ic / ,
-except it searches forward through the history.
-.It Xo
-.Oo Ar n Oc Ns n
-.Xc
-Search for the
-.Ar n Ns th
-occurrence of the last search string;
-the direction of the search is the same as the last search.
-.It Xo
-.Oo Ar n Oc Ns N
-.Xc
-Search for the
-.Ar n Ns th
-occurrence of the last search string;
-the direction of the search is the opposite of the last search.
 .El
 .Pp
 Edit commands
