@@ -1,6 +1,6 @@
 .\"	Public Domain
 .\"
-.Dd Aug 11, 2026
+.Dd Aug 12, 2026
 .Dt NEXTSH 1
 .Os nextsh 1.0
 .Sh NAME
@@ -4872,19 +4872,33 @@ Search forward in the current line for the
 occurrence of the next character typed.
 .It search-history: ^R
 Enter incremental search mode.
-The internal history list is searched
-backwards for commands matching the input.
+The internal history list is searched backwards for commands matching
+the input, which is shown in place of the prompt, together with the
+matching line.
 An initial
 .Ql ^
 in the search string anchors the search.
-The abort key will leave search mode.
-Other commands will be executed after leaving search mode.
 Successive
 .Ic search-history
-commands continue searching backward to the next previous occurrence of the
-pattern.
+commands continue searching backward to the next previous occurrence of
+the pattern, and
+.Ic search-history-forward
+commands search forward again;
+either one entered on an empty pattern repeats the previous search.
+.Ic delete-char-backward
+erases the last character of the pattern, and erasing all of it returns
+to the line the search started on.
+The abort key restores that line and leaves search mode.
+Other commands will be executed after leaving search mode.
 The history buffer retains only a finite number of lines; the oldest
 are discarded as necessary.
+.It search-history-forward: ^S
+As
+.Ic search-history ,
+but searching forward, towards more recent commands.
+Note that many terminals use ^S to stop output; see
+.Xr stty 1
+if it does not reach the shell.
 .It set-mark-command: ^[ Ns Aq space
 Set the mark at the cursor position.
 .It transpose-chars: ^T
@@ -5011,7 +5025,19 @@ command in
 .Sx Emacs editing mode
 for more information.
 .It ^R
-Redraw the current line.
+Search the history backwards, incrementally.
+See the
+.Em search-history
+command in
+.Sx Emacs editing mode
+for more information.
+.It ^S
+Search the history forwards, incrementally.
+See the
+.Em search-history-forward
+command in
+.Sx Emacs editing mode
+for more information.
 .It ^V
 Literal next.
 The next character typed is not treated specially (can be used
@@ -5472,7 +5498,19 @@ The current line is read, parsed, and executed by the shell.
 .It ^L
 Clear the screen (if possible) and redraw the current line.
 .It ^R
-Redraw the current line.
+Search the history backwards, incrementally.
+See the
+.Em search-history
+command in
+.Sx Emacs editing mode
+for more information.
+.It ^S
+Search the history forwards, incrementally.
+See the
+.Em search-history-forward
+command in
+.Sx Emacs editing mode
+for more information.
 .It Xo
 .Oo Ar n Oc Ns \&.
 .Xc

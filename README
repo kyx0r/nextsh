@@ -2604,13 +2604,24 @@ DESCRIPTION
 
      search-history: ^R
              Enter incremental search mode.  The internal history list is
-             searched backwards for commands matching the input.  An initial
-             `^' in the search string anchors the search.  The abort key will
-             leave search mode.  Other commands will be executed after leaving
-             search mode.  Successive search-history commands continue
-             searching backward to the next previous occurrence of the
-             pattern.  The history buffer retains only a finite number of
-             lines; the oldest are discarded as necessary.
+             searched backwards for commands matching the input, which is
+             shown in place of the prompt, together with the matching line.
+             An initial `^' in the search string anchors the search.
+             Successive search-history commands continue searching backward to
+             the next previous occurrence of the pattern, and
+             search-history-forward commands search forward again; either one
+             entered on an empty pattern repeats the previous search.
+             delete-char-backward erases the last character of the pattern,
+             and erasing all of it returns to the line the search started on.
+             The abort key restores that line and leaves search mode.  Other
+             commands will be executed after leaving search mode.  The history
+             buffer retains only a finite number of lines; the oldest are
+             discarded as necessary.
+
+     search-history-forward: ^S
+             As search-history, but searching forward, towards more recent
+             commands.  Note that many terminals use ^S to stop output; see
+             stty(1) if it does not reach the shell.
 
      set-mark-command: ^[<space>
              Set the mark at the cursor position.
@@ -2689,7 +2700,13 @@ DESCRIPTION
                  See the clear-screen command in Emacs editing mode for more
                  information.
 
-     ^R          Redraw the current line.
+     ^R          Search the history backwards, incrementally.  See the
+                 search-history command in Emacs editing mode for more
+                 information.
+
+     ^S          Search the history forwards, incrementally.  See the
+                 search-history-forward command in Emacs editing mode for more
+                 information.
 
      ^V          Literal next.  The next character typed is not treated
                  specially (can be used to insert the characters being
@@ -2908,7 +2925,13 @@ DESCRIPTION
 
      ^L      Clear the screen (if possible) and redraw the current line.
 
-     ^R      Redraw the current line.
+     ^R      Search the history backwards, incrementally.  See the
+             search-history command in Emacs editing mode for more
+             information.
+
+     ^S      Search the history forwards, incrementally.  See the
+             search-history-forward command in Emacs editing mode for more
+             information.
 
      [n].    Redo the last edit command n times.
 
@@ -3023,4 +3046,4 @@ BUGS
      produce an error.  For example, the parenthesis in `x);;' is interpreted
      as the closing parenthesis in `$(case x in x);; *);; esac)'.
 
-nextsh 1.0                      August 11, 2026                     nextsh 1.0
+nextsh 1.0                      August 12, 2026                     nextsh 1.0
