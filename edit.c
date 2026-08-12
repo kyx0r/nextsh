@@ -275,6 +275,242 @@ x_do_comment(char *buf, int bsize, int *lenp)
 }
 
 /* ------------------------------------------------------------------------- */
+/*           Incremental history search, common to vi/emacs		     */
+
+#define ISRCH_MAX	256		/* longest search pattern */
+
+/* what an input byte means while searching */
+#define ISRCH_INSERT	0		/* add the byte to the pattern */
+#define ISRCH_BACK	1		/* search further back */
+#define ISRCH_FWD	2		/* search further forward */
+#define ISRCH_ERASE	3		/* erase the last byte of the pattern */
+#define ISRCH_ABORT	4		/* give up, keep the original line */
+#define ISRCH_OTHER	5		/* end the search, byte is input */
+
+static char	isrch_last[ISRCH_MAX];	/* pattern of the previous search */
+
+static int
+isrch_cont(unsigned char c)
+{
+	return (c & 0xc0) == 0x80;
+}
+
+/*
+ * Write byte c the way it is to be displayed, if show is set, and
+ * return the number of columns it takes up.
+ */
+static int
+isrch_putb(unsigned char c, int show)
+{
+	if (isrch_cont(c)) {
+		if (show)
+			x_putc(c);
+		return 0;
+	}
+	if (c < ' ' || c == 0x7f) {
+		if (show) {
+			x_putc('^');
+			x_putc(c ^ '@');
+		}
+		return 2;
+	}
+	if (show)
+		x_putc(c);
+	return 1;
+}
+
+/*
+ * Redraw the search on the line it started on: the search prompt, then
+ * as much of the matching line as fits, with the cursor on the match.
+ * prevw is the width the previous call drew, which is to be erased.
+ * Returns the width drawn this time.
+ */
+static int
+isrch_show(const char *pat, int back, int failed, const char *line, int len,
+    int off, int prevw)
+{
+	char		buf[ISRCH_MAX + 32];
+	const char	*p;
+	int		cols = x_cols - 2;
+	int		col = 0, ccol = -1, start = 0, width, i;
+
+	shf_snprintf(buf, sizeof buf, "(%s%si-search)`%s': ",
+	    failed ? "failed " : "", back ? "reverse-" : "", pat);
+	x_putc('\r');
+	for (p = buf; *p != '\0' && col < cols; p++)
+		col += isrch_putb(*p, 1);
+
+	/* scroll the line sideways if the match is off to the right */
+	for (width = 0, i = 0; i < off; i++)
+		width += isrch_putb(line[i], 0);
+	if (width > cols - col - 1) {
+		width = 0;
+		start = off;
+		while (start > 0 && width < (cols - col) / 2)
+			width += isrch_putb(line[--start], 0);
+		/* never start on a continuation byte */
+		while (start < off && isrch_cont(line[start]))
+			start++;
+	}
+
+	for (i = start; i < len && col < cols; i++) {
+		if (i == off)
+			ccol = col;
+		col += isrch_putb(line[i], 1);
+	}
+	if (ccol < 0)
+		ccol = col;
+
+	/* erase what the previous, longer, line left behind */
+	while (col < prevw) {
+		x_putc(' ');
+		col++;
+	}
+	width = col;
+	while (col > ccol) {
+		x_putc('\b');
+		col--;
+	}
+	x_flush();
+
+	return width;
+}
+
+/* the history entry matching pat, or -1 if there is none */
+static int
+isrch_find(const char *pat, int hist, int fwd, int step)
+{
+	int	hcount = histptr - history + 1;
+	int	anchored = *pat == '^';
+	int	start;
+
+	if (anchored)
+		pat++;
+	if (*pat == '\0')
+		return -1;
+	if (hist < 0)
+		start = fwd && step ? hcount : hcount - 1;
+	else
+		start = step ? hist + (fwd ? 1 : -1) : hist;
+	if (start < 0 || start >= hcount)
+		return -1;
+
+	return findhist(start, fwd, pat, anchored);
+}
+
+/* where pat matches in the history entry s */
+static int
+isrch_off(const char *s, const char *pat)
+{
+	const char	*p;
+
+	if (*pat == '^')
+		return 0;
+	p = strstr(s, pat);
+
+	return p == NULL ? 0 : p - s;
+}
+
+/*
+ * Incremental history search, as offered by ^R and ^S in both editing
+ * modes.  Input is read with getch() and classify() says what each byte
+ * means, so that either mode can apply its own key bindings.  The entry
+ * the search settled on is left in *histp, or -1 to keep the line the
+ * search started from, with the match at *offp.  Returns the byte that
+ * ended the search and is still to be handled, or 0 if there is none.
+ */
+static int
+x_isearch(int (*getch)(void), int (*classify)(int), int back,
+    const char *line, int len, int *histp, int *offp)
+{
+	char		pat[ISRCH_MAX];
+	const char	*cur = line;
+	int		curlen = len;
+	int		plen = 0, hist = -1, off = 0, failed = 0;
+	int		c, n, act, step, width = 0;
+
+	pat[0] = '\0';
+	for (;;) {
+		width = isrch_show(pat, back, failed, cur, curlen, off, width);
+		if ((c = getch()) < 0) {
+			c = 0;
+			break;
+		}
+		act = classify(c);
+		if (act == ISRCH_ABORT) {
+			hist = -1;
+			c = 0;
+			break;
+		}
+		if (act == ISRCH_OTHER)
+			break;
+		if (act == ISRCH_ERASE) {
+			if (plen == 0)
+				continue;
+			do {
+				plen--;
+			} while (plen > 0 && isrch_cont(pat[plen]));
+			pat[plen] = '\0';
+			failed = 0;
+			if (plen == 0) {
+				/* back to the line the search started on */
+				hist = -1;
+				off = 0;
+				cur = line;
+				curlen = len;
+				continue;
+			}
+		} else if (act == ISRCH_INSERT) {
+			if (plen >= ISRCH_MAX - 1) {
+				x_putc(BEL);
+				continue;
+			}
+			pat[plen++] = c;
+			pat[plen] = '\0';
+			failed = 0;
+		} else if (plen == 0) {
+			/* ^R or ^S on their own repeat the last search */
+			strlcpy(pat, isrch_last, sizeof pat);
+			plen = strlen(pat);
+		}
+
+		step = act == ISRCH_BACK || act == ISRCH_FWD;
+		if (act == ISRCH_BACK)
+			back = 1;
+		else if (act == ISRCH_FWD)
+			back = 0;
+		if (plen == 0)
+			continue;
+
+		if ((n = isrch_find(pat, hist, !back, step)) < 0) {
+			failed = 1;
+			x_putc(BEL);
+			continue;
+		}
+		failed = 0;
+		hist = n;
+		cur = history[hist];
+		curlen = strlen(cur);
+		off = isrch_off(cur, pat);
+	}
+
+	if (plen != 0)
+		strlcpy(isrch_last, pat, sizeof isrch_last);
+
+	/* leave the line clear for the caller to draw on */
+	x_putc('\r');
+	while (width-- > 0)
+		x_putc(' ');
+	x_putc('\r');
+	x_flush();
+
+	*histp = hist;
+	*offp = off;
+
+	return c;
+}
+
+/* ------------------------------------------------------------------------- */
 /*           Common file/command completion code for vi/emacs	             */
 
 
@@ -1305,8 +1541,6 @@ static int	x_size(int);
 static void	x_zots(char *);
 static void	x_zotc(int);
 static void	x_load_hist(char **);
-static int	x_search(char *, int, int);
-static int	x_match(char *, char *);
 static void	x_redraw(int);
 static void	x_push(int);
 static void	x_adjust(void);
@@ -1363,6 +1597,7 @@ static int	x_prev_histword(int);
 static int	x_search_char_forw(int);
 static int	x_search_char_back(int);
 static int	x_search_hist(int);
+static int	x_search_hist_fwd(int);
 static int	x_set_mark(int);
 static int	x_transpose(int);
 static int	x_xchg_point_mark(int);
@@ -1420,6 +1655,7 @@ static const struct x_ftab x_ftab[] = {
 	{ x_search_char_forw,	"search-character-forward",	XF_ARG },
 	{ x_search_char_back,	"search-character-backward",	XF_ARG },
 	{ x_search_hist,	"search-history",		0 },
+	{ x_search_hist_fwd,	"search-history-forward",	0 },
 	{ x_set_mark,		"set-mark-command",		0 },
 	{ x_transpose,		"transpose-chars",		0 },
 	{ x_xchg_point_mark,	"exchange-point-and-mark",	0 },
@@ -2049,102 +2285,61 @@ kb_find_hist_func(char c)
 	return (x_insert);
 }
 
-/* reverse incremental history search */
+/* how the emacs mode's key bindings map onto an incremental search */
 static int
-x_search_hist(int c)
+x_isrch_class(int c)
 {
-	int offset = -1;	/* offset of match in xbuf, else -1 */
-	char pat [256+1];	/* pattern buffer */
-	char *p = pat;
-	int (*f)(int);
+	int	(*f)(int) = kb_find_hist_func(c);
 
-	*p = '\0';
-	while (1) {
-		if (offset < 0) {
-			x_e_puts("\nI-search: ");
-			x_e_puts(pat);
-		}
-		x_flush();
-		if ((c = x_e_getc()) < 0)
-			return KSTD;
-		f = kb_find_hist_func(c);
-		if (c == CTRL('[') || c == CTRL('@')) {
-			x_e_ungetc(c);
-			break;
-		} else if (f == x_search_hist)
-			offset = x_search(pat, 0, offset);
-		else if (f == x_del_back) {
-			if (p == pat) {
-				offset = -1;
-				break;
-			}
-			if (p > pat)
-				*--p = '\0';
-			if (p == pat)
-				offset = -1;
-			else
-				offset = x_search(pat, 1, offset);
-			continue;
-		} else if (f == x_insert) {
-			/* add char to pattern */
-			/* overflow check... */
-			if (p >= &pat[sizeof(pat) - 1]) {
-				x_e_putc(BEL);
-				continue;
-			}
-			*p++ = c, *p = '\0';
-			if (offset >= 0) {
-				/* already have partial match */
-				offset = x_match(xbuf, pat);
-				if (offset >= 0) {
-					x_goto(xbuf + offset + (p - pat) -
-					    (*pat == '^'));
-					continue;
-				}
-			}
-			offset = x_search(pat, 0, offset);
-		} else { /* other command */
-			x_e_ungetc(c);
-			break;
-		}
+	if (f == x_search_hist)
+		return ISRCH_BACK;
+	if (f == x_search_hist_fwd)
+		return ISRCH_FWD;
+	if (f == x_del_back)
+		return ISRCH_ERASE;
+	if (f == x_abort)
+		return ISRCH_ABORT;
+	if (f == x_insert && c >= ' ' && c != 0x7f)
+		return ISRCH_INSERT;
+
+	return ISRCH_OTHER;
+}
+
+/* incremental history search, backwards (^R) or forwards (^S) */
+static int
+x_isrch_run(int back)
+{
+	int	hist, off, c;
+
+	c = x_isearch(x_e_getc, x_isrch_class, back, xbuf, xep - xbuf,
+	    &hist, &off);
+	if (hist >= 0) {
+		x_histp = &history[hist];
+		strlcpy(xbuf, history[hist], xend - xbuf);
+		xep = xbuf + strlen(xbuf);
+		if (off > xep - xbuf)
+			off = xep - xbuf;
+		xcp = xbuf + off;
 	}
-	if (offset < 0)
-		x_redraw(-1);
+	xbp = xbuf;
+	xlp_valid = false;
+	x_redraw(xx_cols);
+	if (c != 0)
+		x_e_ungetc(c);
+
 	return KSTD;
 }
 
-/* search backward from current line */
 static int
-x_search(char *pat, int sameline, int offset)
+x_search_hist(int c)
 {
-	char **hp;
-	int i;
-
-	for (hp = x_histp - (sameline ? 0 : 1) ; hp >= history; --hp) {
-		i = x_match(*hp, pat);
-		if (i >= 0) {
-			if (offset < 0)
-				x_e_putc('\n');
-			x_load_hist(hp);
-			x_goto(xbuf + i + strlen(pat) - (*pat == '^'));
-			return i;
-		}
-	}
-	x_e_putc(BEL);
-	x_histp = histptr;
-	return -1;
+	return x_isrch_run(1);
 }
 
-/* return position of first match of pattern in string, else -1 */
 static int
-x_match(char *str, char *pat)
+x_search_hist_fwd(int c)
 {
-	if (*pat == '^') {
-		return (strncmp(str, pat+1, strlen(pat+1)) == 0) ? 0 : -1;
-	} else {
-		char *q = strstr(str, pat);
-		return (q == NULL) ? -1 : q - str;
-	}
+	return x_isrch_run(0);
 }
 
 static int
@@ -2697,6 +2892,7 @@ x_init_emacs(void)
 	kb_add(x_search_char_back,	CTRL('['), CTRL(']'), 0);
 	kb_add(x_search_char_forw,	CTRL(']'), 0);
 	kb_add(x_search_hist,		CTRL('R'), 0);
+	kb_add(x_search_hist_fwd,	CTRL('S'), 0);
 	kb_add(x_set_mark,		CTRL('['), ' ', 0);
 	kb_add(x_transpose,		CTRL('T'), 0);
 	kb_add(x_prev_com,		CTRL('P'), 0);
@@ -3353,7 +3549,9 @@ struct edstate {
 };
 
 
+static int	vi_nextc(void);
 static int	vi_hook(int);
+static int	vi_search_hist(int);
 static void	vi_reset(char *, size_t);
 static int	nextstate(int);
 static int	vi_insert(int);
@@ -3523,19 +3721,7 @@ x_vi(char *buf, size_t len)
 	vi_pprompt(1);
 	x_flush();
 	while (1) {
-		if (macro.p) {
-			c = (unsigned char)*macro.p++;
-			/* end of current macro? */
-			if (!c) {
-				/* more macros left to finish? */
-				if (*macro.p++)
-					continue;
-				/* must be the end of all the macros */
-				vi_macro_reset();
-				c = x_getc();
-			}
-		} else
-			c = x_getc();
+		c = vi_nextc();
 
 		if (c == -1)
 			break;
@@ -3574,11 +3760,103 @@ x_vi(char *buf, size_t len)
 	return es->linelen;
 }
 
+/* the next input byte, taken from a macro being expanded if there is one */
+static int
+vi_nextc(void)
+{
+	int	c;
+
+	while (macro.p) {
+		c = (unsigned char)*macro.p++;
+		/* end of current macro? */
+		if (c)
+			return c;
+		/* more macros left to finish? */
+		if (*macro.p++)
+			continue;
+		/* must be the end of all the macros */
+		vi_macro_reset();
+		break;
+	}
+
+	return x_getc();
+}
+
+/* how the vi mode's keys map onto an incremental search */
+static int
+vi_isrch_class(int c)
+{
+	if (c == CTRL('r'))
+		return ISRCH_BACK;
+	if (c == CTRL('s'))
+		return ISRCH_FWD;
+	if (c == edchars.erase || c == CTRL('h') || c == 0x7f)
+		return ISRCH_ERASE;
+	if (c == CTRL('g'))
+		return ISRCH_ABORT;
+	if (c >= ' ' && c != 0x7f)
+		return ISRCH_INSERT;
+
+	return ISRCH_OTHER;
+}
+
+/*
+ * Incremental history search, backwards (^R) or forwards (^S), as in
+ * the emacs mode.  Returns the byte that ended the search and is to be
+ * handled as regular input, or 0 if there is none.
+ */
+static int
+vi_search_hist(int back)
+{
+	char	*hp;
+	int	hist, off, c;
+
+	c = x_isearch(vi_nextc, vi_isrch_class, back, es->cbuf, es->linelen,
+	    &hist, &off);
+	if (hist >= 0) {
+		hp = history[hist];
+		if ((es->linelen = strlen(hp)) >= es->cbufsize)
+			es->linelen = es->cbufsize - 1;
+		memmove(es->cbuf, hp, es->linelen);
+		if (off > es->linelen)
+			off = es->linelen;
+		es->cursor = off;
+		if (insert == 0 && es->cursor == es->linelen && es->cursor > 0)
+			es->cursor--;
+		hnum = ohnum = hist;
+		modified = 0;
+		/* the recalled line is not what was being inserted */
+		inslen = 0;
+		first_insert = 0;
+	}
+	redraw_line(0, 0);
+	refresh_line(insert != 0);
+	x_flush();
+
+	if (c == edchars.intr || c == edchars.quit) {
+		/* pretend we got an interrupt, as x_vi() does */
+		x_vi_zotc(c);
+		x_flush();
+		trapsig(c == edchars.intr ? SIGINT : SIGQUIT);
+		x_mode(false);
+		unwind(LSHELL);
+	}
+	if (c == edchars.eof)
+		c = 0;			/* x_vi() checks this before we do */
+
+	return c;
+}
+
 static int
 vi_hook(int ch)
 {
 	static char	curcmd[MAXVICMD], locpat[SRCHLEN];
 	static int	cmdlen, argc1, argc2;
+
+	if (state == VNORMAL && (ch == CTRL('r') || ch == CTRL('s'))) {
+		if ((ch = vi_search_hist(ch == CTRL('r'))) == 0)
+			return 0;
+	}
 
 	switch (state) {
 
@@ -3980,10 +4258,6 @@ vi_insert(int ch)
 		do_clear_screen();
 		break;
 
-	case CTRL('r'):
-		redraw_line(1, 0);
-		break;
-
 	case CTRL('i'):
 		if (Flag(FVITABCOMPLETE)) {
 			complete_word(0, 0);
@@ -4041,10 +4315,6 @@ vi_cmd(int argcnt, const char *cmd)
 
 		case CTRL('l'):
 			do_clear_screen();
-			break;
-
-		case CTRL('r'):
-			redraw_line(1, 0);
 			break;
 
 		case '@':
