@@ -3587,7 +3587,6 @@ static int	Forwword(int);
 static int	Backword(int);
 static int	Endword(int);
 static int	grabhist(int, int);
-static int	grabsearch(int, int, int, char *);
 static void	do_clear_screen(void);
 static void	redraw_line(int, int);
 static void	refresh_line(int);
@@ -3614,7 +3613,6 @@ static int	isu8cont(unsigned char);
 #define U_	0x10		/* an UN-undoable command (that isn't a M_) */
 #define B_	0x20		/* bad command (^@) */
 #define Z_	0x40		/* repeat count defaults to 0 (not 1) */
-#define S_	0x80		/* search (/, ?) */
 
 #define is_bad(c)	(classify[(c)&0x7f]&B_)
 #define is_cmd(c)	(classify[(c)&0x7f]&(M_|E_|C_|U_))
@@ -3622,7 +3620,6 @@ static int	isu8cont(unsigned char);
 #define is_extend(c)	(classify[(c)&0x7f]&E_)
 #define is_long(c)	(classify[(c)&0x7f]&X_)
 #define is_undoable(c)	(!(classify[(c)&0x7f]&U_))
-#define is_srch(c)	(classify[(c)&0x7f]&S_)
 #define is_zerocount(c)	(classify[(c)&0x7f]&Z_)
 
 const unsigned char	classify[128] = {
@@ -3638,15 +3635,15 @@ const unsigned char	classify[128] = {
    /*  04  <space>  !       "       #       $       %       &       '        */
 	    M_,     0,      0,      C_,     M_,     M_,     0,      0,
    /*  05   (       )       *       +       ,       -       .       /        */
-	    0,      0,      C_,     C_,     M_,     C_,     0,      C_|S_,
+	    0,      0,      C_,     C_,     M_,     C_,     0,      0,
    /*  06   0       1       2       3       4       5       6       7        */
 	    M_,     0,      0,      0,      0,      0,      0,      0,
    /*  07   8       9       :       ;       <       =       >       ?        */
-	    0,      0,      0,      M_,     0,      C_,     0,      C_|S_,
+	    0,      0,      0,      M_,     0,      C_,     0,      0,
    /* 010   @       A       B       C       D       E       F       G        */
 	    C_|X_,  C_,     M_,     C_,     C_,     M_,     M_|X_,  C_|U_|Z_,
    /* 011   H       I       J       K       L       M       N       O        */
-	    0,      C_,     0,      0,      0,      0,      C_|U_,  0,
+	    0,      C_,     0,      0,      0,      0,      0,      0,
    /* 012   P       Q       R       S       T       U       V       W        */
 	    C_,     0,      C_,     C_,     M_|X_,  C_,     0,      M_,
    /* 013   X       Y       Z       [       \       ]       ^       _        */
@@ -3654,7 +3651,7 @@ const unsigned char	classify[128] = {
    /* 014   `       a       b       c       d       e       f       g        */
 	    0,      C_,     M_,     E_,     E_,     M_,     M_|X_,  C_|Z_,
    /* 015   h       i       j       k       l       m       n       o        */
-	    M_,     C_,     C_|U_,  C_|U_,  M_,     0,      C_|U_,  0,
+	    M_,     C_,     C_|U_,  C_|U_,  M_,     0,      0,      0,
    /* 016   p       q       r       s       t       u       v       w        */
 	    C_,     0,      X_,     C_,     M_|X_,  C_|U_,  C_|U_|Z_,M_,
    /* 017   x       y       z       {       |       }       ~      ^?        */
@@ -3662,7 +3659,6 @@ const unsigned char	classify[128] = {
 };
 
 #define MAXVICMD	3
-#define SRCHLEN		40
 
 #define INSERT		1
 #define REPLACE		2
@@ -3676,7 +3672,6 @@ const unsigned char	classify[128] = {
 #define VCMD		6		/* single char command (eg, X) */
 #define VREDO		7		/* . */
 #define VLIT		8		/* ^V */
-#define VSEARCH		9		/* /, ? */
 
 static char		undocbuf[LINE];
 
@@ -3694,15 +3689,12 @@ static char	ibuf[LINE];		/* input buffer */
 static int	first_insert;		/* set when starting in insert mode */
 static int	saved_inslen;		/* saved inslen for first insert */
 static int	inslen;			/* length of input buffer */
-static int	srchlen;		/* number of bytes in search pattern */
 static char	ybuf[LINE];		/* yank buffer */
 static int	yanklen;		/* length of yank buffer */
 static int	fsavecmd = ' ';		/* last find command */
 static int	fsavech;		/* character to find */
 static char	lastcmd[MAXVICMD];	/* last non-move command */
 static int	lastac;			/* argcnt for lastcmd */
-static int	lastsearch = ' ';	/* last search command */
-static char	srchpat[SRCHLEN];	/* last search pattern */
 static int	insert;			/* mode: INSERT, REPLACE, or 0 */
 static int	hnum;			/* position in history */
 static int	ohnum;			/* history line copied (after mod) */
@@ -3866,7 +3858,7 @@ vi_search_hist(int back)
 static int
 vi_hook(int ch)
 {
-	static char	curcmd[MAXVICMD], locpat[SRCHLEN];
+	static char	curcmd[MAXVICMD];
 	static int	cmdlen, argc1, argc2;
 
 	if (state == VNORMAL && (ch == CTRL('r') || ch == CTRL('s'))) {
@@ -3908,17 +3900,6 @@ vi_hook(int ch)
 			} else {
 				curcmd[cmdlen++] = ch;
 				state = nextstate(ch);
-				if (state == VSEARCH) {
-					save_cbuf();
-					es->cursor = 0;
-					es->linelen = 0;
-					if (ch == '/') {
-						if (putbuf("/", 1, 0) != 0)
-							return -1;
-					} else if (putbuf("?", 1, 0) != 0)
-						return -1;
-					refresh_line(0);
-				}
 			}
 		}
 		break;
@@ -3983,91 +3964,6 @@ vi_hook(int ch)
 		else {
 			curcmd[cmdlen++] = ch;
 			state = VCMD;
-		}
-		break;
-
-	case VSEARCH:
-		if (ch == '\r' || ch == '\n' /*|| ch == CTRL('[')*/ ) {
-			restore_cbuf();
-			/* Repeat last search? */
-			if (srchlen == 0) {
-				if (!srchpat[0]) {
-					vi_error();
-					state = VNORMAL;
-					refresh_line(0);
-					return 0;
-				}
-			} else {
-				locpat[srchlen] = '\0';
-				(void) strlcpy(srchpat, locpat, sizeof srchpat);
-			}
-			state = VCMD;
-		} else if (ch == edchars.erase || ch == CTRL('h')) {
-			if (srchlen != 0) {
-				do {
-					srchlen--;
-					es->linelen -= char_len(
-					    (unsigned char)locpat[srchlen]);
-				} while (srchlen > 0 &&
-				    isu8cont(locpat[srchlen]));
-				es->cursor = es->linelen;
-				refresh_line(0);
-				return 0;
-			}
-			restore_cbuf();
-			state = VNORMAL;
-			refresh_line(0);
-		} else if (ch == edchars.kill) {
-			srchlen = 0;
-			es->linelen = 1;
-			es->cursor = 1;
-			refresh_line(0);
-			return 0;
-		} else if (ch == edchars.werase) {
-			struct edstate new_es, *save_es;
-			int i;
-			int n = srchlen;
-
-			new_es.cursor = n;
-			new_es.cbuf = locpat;
-
-			save_es = es;
-			es = &new_es;
-			n = backword(1);
-			es = save_es;
-
-			for (i = srchlen; --i >= n; )
-				es->linelen -= char_len((unsigned char)locpat[i]);
-			srchlen = n;
-			es->cursor = es->linelen;
-			refresh_line(0);
-			return 0;
-		} else {
-			if (srchlen == SRCHLEN - 1)
-				vi_error();
-			else {
-				locpat[srchlen++] = ch;
-				if ((ch & 0x80) && Flag(FVISHOW8)) {
-					if (es->linelen + 2 > es->cbufsize)
-						vi_error();
-					es->cbuf[es->linelen++] = 'M';
-					es->cbuf[es->linelen++] = '-';
-					ch &= 0x7f;
-				}
-				if (ch < ' ' || ch == 0x7f) {
-					if (es->linelen + 2 > es->cbufsize)
-						vi_error();
-					es->cbuf[es->linelen++] = '^';
-					es->cbuf[es->linelen++] = ch ^ '@';
-				} else {
-					if (es->linelen >= es->cbufsize)
-						vi_error();
-					es->cbuf[es->linelen++] = ch;
-				}
-				es->cursor = es->linelen;
-				refresh_line(0);
-			}
-			return 0;
 		}
 		break;
 	}
@@ -4152,8 +4048,6 @@ nextstate(int ch)
 {
 	if (is_extend(ch))
 		return VEXTCMD;
-	else if (is_srch(ch))
-		return VSEARCH;
 	else if (is_long(ch))
 		return VXCH;
 	else if (ch == '.')
@@ -4303,7 +4197,7 @@ static int
 vi_cmd(int argcnt, const char *cmd)
 {
 	int		ncursor;
-	int		cur, c1, c2, c3 = 0;
+	int		cur, c1, c2;
 	struct edstate	*t;
 
 	if (argcnt == 0 && !is_zerocount(*cmd))
@@ -4627,38 +4521,6 @@ vi_cmd(int argcnt, const char *cmd)
 			hnum = ohnum;
 			break;
 
-		case '?':
-			if (hnum == hlast)
-				hnum = -1;
-			/* ahhh */
-		case '/':
-			c3 = 1;
-			srchlen = 0;
-			lastsearch = *cmd;
-			/* FALLTHROUGH */
-		case 'n':
-		case 'N':
-			if (lastsearch == ' ')
-				return -1;
-			if (lastsearch == '?')
-				c1 = 1;
-			else
-				c1 = 0;
-			if (*cmd == 'N')
-				c1 = !c1;
-			if ((c2 = grabsearch(modified, hnum,
-			    c1, srchpat)) < 0) {
-				if (c3) {
-					restore_cbuf();
-					refresh_line(0);
-				}
-				return -1;
-			} else {
-				modified = 0;
-				hnum = c2;
-				ohnum = hnum;
-			}
-			break;
 		case '_': {
 			int	inspace;
 			char	*p, *sp;
@@ -5301,40 +5163,6 @@ grabhist(int save, int n)
 	es->cursor = 0;
 	ohnum = n;
 	return 0;
-}
-
-static int
-grabsearch(int save, int start, int fwd, char *pat)
-{
-	char	*hptr;
-	int	hist;
-	int	anchored;
-
-	if ((start == 0 && fwd == 0) || (start >= hlast-1 && fwd == 1))
-		return -1;
-	if (fwd)
-		start++;
-	else
-		start--;
-	anchored = *pat == '^' ? (++pat, 1) : 0;
-	if ((hist = findhist(start, fwd, pat, anchored)) < 0) {
-		/* if (start != 0 && fwd && match(holdbuf, pat) >= 0) { */
-		/* XXX should strcmp be strncmp? */
-		if (start != 0 && fwd && strcmp(holdbuf, pat) >= 0) {
-			restore_cbuf();
-			return 0;
-		} else
-			return -1;
-	}
-	if (save)
-		save_cbuf();
-	histnum(hist);
-	hptr = *histpos();
-	if ((es->linelen = strlen(hptr)) >= es->cbufsize)
-		es->linelen = es->cbufsize - 1;
-	memmove(es->cbuf, hptr, es->linelen);
-	es->cursor = 0;
-	return hist;
 }
 
 static void
