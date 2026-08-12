@@ -286,6 +286,7 @@ x_do_comment(char *buf, int bsize, int *lenp)
 #define ISRCH_ERASE	3		/* erase the last byte of the pattern */
 #define ISRCH_ABORT	4		/* give up, keep the original line */
 #define ISRCH_OTHER	5		/* end the search, byte is input */
+#define ISRCH_KILL	6		/* erase the whole pattern, keep going */
 
 static char	isrch_last[ISRCH_MAX];	/* pattern of the previous search */
 
@@ -444,6 +445,17 @@ x_isearch(int (*getch)(void), int (*classify)(int), int back,
 		}
 		if (act == ISRCH_OTHER)
 			break;
+		if (act == ISRCH_KILL) {
+			/* ^U empties the pattern without leaving the search */
+			plen = 0;
+			pat[0] = '\0';
+			failed = 0;
+			hist = -1;
+			off = 0;
+			cur = line;
+			curlen = len;
+			continue;
+		}
 		if (act == ISRCH_ERASE) {
 			if (plen == 0)
 				continue;
@@ -2297,6 +2309,8 @@ x_isrch_class(int c)
 		return ISRCH_FWD;
 	if (f == x_del_back)
 		return ISRCH_ERASE;
+	if (f == x_del_line)
+		return ISRCH_KILL;
 	if (f == x_abort)
 		return ISRCH_ABORT;
 	if (f == x_insert && c >= ' ' && c != 0x7f)
@@ -3792,6 +3806,8 @@ vi_isrch_class(int c)
 		return ISRCH_FWD;
 	if (c == edchars.erase || c == CTRL('h') || c == 0x7f)
 		return ISRCH_ERASE;
+	if (c == edchars.kill || c == CTRL('u'))
+		return ISRCH_KILL;
 	if (c == CTRL('g'))
 		return ISRCH_ABORT;
 	if (c >= ' ' && c != 0x7f)
