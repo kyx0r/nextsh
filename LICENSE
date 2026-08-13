@@ -14,8 +14,8 @@ source or binary form, for any purpose, commercial or non-commercial, and
 by any means, with or without attribution.
 
 The only exceptions are the library replacements bundled in compat.c, which
-are ISC or BSD licensed.  Their notices are reproduced beside the code they
-cover and must be retained; they read, in substance:
+are ISC or BSD licensed.  Their notices are reproduced at the top of that
+file and must be retained; they read, in substance:
 
 Permission to use, copy, modify, and/or distribute this software for any
 purpose with or without fee is hereby granted, provided that the above
