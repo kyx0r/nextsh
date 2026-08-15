@@ -42,6 +42,7 @@ struct lex_state {
 		struct scsparen_info {
 			int nparen;	/* count open parenthesis */
 			int csstate;	/* XXX remove */
+			int nested;	/* nested $() inside "" of a $() */
 #define ls_scsparen ls_info.u_scsparen
 		} u_scsparen;
 
@@ -369,6 +370,7 @@ yylex(int cf)
 						PUSH_STATE(SCSPAREN);
 						statep->ls_scsparen.nparen = 1;
 						statep->ls_scsparen.csstate = 0;
+						statep->ls_scsparen.nested = 0;
 						*wp++ = COMSUB;
 					}
 				} else if (c == '{') /*}*/ {
@@ -472,9 +474,10 @@ yylex(int cf)
 
 		case SCSPAREN: /* $( .. ) */
 			/* todo: deal with $(...) quoting properly
-			 * kludge to partly fake quoting inside $(..): doesn't
-			 * really work because nested $(..) or ${..} inside
-			 * double quotes aren't dealt with.
+			 * kludge to partly fake quoting inside $(..): nested
+			 * $(..) inside double quotes is handled by pushing
+			 * another SCSPAREN state (marked nested, so its ')'
+			 * is kept as text), but ${..} still isn't dealt with.
 			 */
 			switch (statep->ls_scsparen.csstate) {
 			case 0: /* normal */
@@ -508,6 +511,18 @@ yylex(int cf)
 					statep->ls_scsparen.csstate = 0;
 				else if (c == '\\')
 					statep->ls_scsparen.csstate = 3;
+				else if (c == '$') {
+					c2 = getsc();
+					if (c2 == '(') /*)*/ {
+						*wp++ = c;
+						c = c2;
+						PUSH_STATE(SCSPAREN);
+						statep->ls_scsparen.nparen = 1;
+						statep->ls_scsparen.csstate = 0;
+						statep->ls_scsparen.nested = 1;
+					} else
+						ungetsc(c2);
+				}
 				break;
 
 			case 4: /* single quotes */
@@ -518,8 +533,12 @@ yylex(int cf)
 				break;
 			}
 			if (statep->ls_scsparen.nparen == 0) {
+				int nested = statep->ls_scsparen.nested;
 				POP_STATE();
-				*wp++ = 0; /* end of COMSUB */
+				if (nested)
+					*wp++ = c; /* ')' of inner $() */
+				else
+					*wp++ = 0; /* end of COMSUB */
 			} else
 				*wp++ = c;
 			break;
@@ -554,6 +573,7 @@ yylex(int cf)
 						wp++;
 						statep->ls_scsparen.nparen = 1;
 						statep->ls_scsparen.csstate = 0;
+						statep->ls_scsparen.nested = 0;
 						state = statep->ls_state =
 						    SCSPAREN;
 					}
