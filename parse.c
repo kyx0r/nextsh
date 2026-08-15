@@ -50,6 +50,14 @@ struct lex_state {
 			int nparen;	/* count open parenthesis */
 			int csstate;	/* XXX remove */
 			int nested;	/* nested $() inside "" of a $() */
+			int ncase;	/* open case .. esac, ) ends a pattern */
+			int needin;	/* case seen, waiting for its in */
+			int inpat;	/* at a case pattern: ( and ) are its */
+			int semi;	/* last token was a ; (;; ends an item) */
+			int cmdpos;	/* at the start of a command */
+			int inword;	/* in the middle of a word */
+			int wlen;	/* length of the word, >4 if not a kw */
+			char word[4];	/* enough to hold case and esac */
 #define ls_scsparen ls_info.u_scsparen
 		} u_scsparen;
 
@@ -125,6 +133,26 @@ uint32_t histsize;	/* history size */
 			    state = statep->ls_state = (s); \
 			} while (0)
 
+/* start scanning the raw text of a $(..) body */
+#define INIT_CSSTATE(nst)	do { \
+			    statep->ls_scsparen.nparen = 1; \
+			    statep->ls_scsparen.csstate = 0; \
+			    statep->ls_scsparen.nested = (nst); \
+			    statep->ls_scsparen.ncase = 0; \
+			    statep->ls_scsparen.needin = 0; \
+			    statep->ls_scsparen.inpat = 0; \
+			    statep->ls_scsparen.semi = 0; \
+			    statep->ls_scsparen.cmdpos = 1; \
+			    statep->ls_scsparen.inword = 0; \
+			    statep->ls_scsparen.wlen = 0; \
+			} while (0)
+
+/* likewise, for a construct nested in the body being scanned */
+#define PUSH_CSSTATE(s, nst)	do { \
+			    PUSH_STATE(s); \
+			    INIT_CSSTATE(nst); \
+			} while (0)
+
 #define POP_STATE()	do { \
 			    if (--statep == state_info.base) \
 				statep = pop_state_(&state_info, statep); \
@@ -154,6 +182,7 @@ yylex(int cf)
 	int done;		/* raw comsub scan: current construct closed */
 	int nested;		/* raw comsub scan: not the outermost $( */
 	int csemit;		/* raw comsub scan: c still has to be copied */
+	int csword;		/* raw comsub scan: c continues a word */
 	char *cshere[CSHERES];	/* raw comsub scan: pending here delimiters */
 	int csheretab[CSHERES];	/* raw comsub scan: matching <<- flags */
 	int ncshere;
@@ -383,10 +412,7 @@ yylex(int cf)
 						*wp++ = EXPRSUB;
 					} else {
 						ungetsc(c);
-						PUSH_STATE(SCSPAREN);
-						statep->ls_scsparen.nparen = 1;
-						statep->ls_scsparen.csstate = 0;
-						statep->ls_scsparen.nested = 0;
+						PUSH_CSSTATE(SCSPAREN, 0);
 						*wp++ = COMSUB;
 					}
 				} else if (c == '{') /*}*/ {
@@ -502,6 +528,63 @@ yylex(int cf)
 			 */
 			done = 0;
 			csemit = 1;
+			csword = statep->ls_scsparen.inword;
+			if (state == SCSPAREN && !statep->ls_scsparen.csstate) {
+				/* Track word boundaries: '#' only starts a
+				 * comment at the start of a word and case
+				 * and esac are only keywords at the start of
+				 * a command.  While a case is open, a ')'
+				 * ends a pattern instead of the $(..) body.
+				 */
+				if (!ctype(c, C_LEX1)) {
+					if (statep->ls_scsparen.wlen <
+					    (int)sizeof(statep->ls_scsparen.word))
+						statep->ls_scsparen.word[
+						    statep->ls_scsparen.wlen] = c;
+					statep->ls_scsparen.wlen++;
+					statep->ls_scsparen.inword = 1;
+				} else {
+					if (statep->ls_scsparen.wlen == 4 &&
+					    statep->ls_scsparen.cmdpos &&
+					    !strncmp(statep->ls_scsparen.word,
+					    "case", 4)) {
+						statep->ls_scsparen.ncase++;
+						statep->ls_scsparen.needin = 1;
+					} else if (statep->ls_scsparen.wlen == 4 &&
+					    statep->ls_scsparen.ncase &&
+					    (statep->ls_scsparen.cmdpos ||
+					    statep->ls_scsparen.inpat) &&
+					    !strncmp(statep->ls_scsparen.word,
+					    "esac", 4)) {
+						statep->ls_scsparen.ncase--;
+						statep->ls_scsparen.inpat = 0;
+					} else if (statep->ls_scsparen.wlen == 2 &&
+					    statep->ls_scsparen.needin &&
+					    !strncmp(statep->ls_scsparen.word,
+					    "in", 2)) {
+						statep->ls_scsparen.needin = 0;
+						statep->ls_scsparen.inpat = 1;
+					}
+					if (statep->ls_scsparen.inword)
+						statep->ls_scsparen.cmdpos = 0;
+					statep->ls_scsparen.inword = 0;
+					statep->ls_scsparen.wlen = 0;
+					if (c != ' ' && c != '\t' &&
+					    c != '<' && c != '>')
+						statep->ls_scsparen.cmdpos = 1;
+					/* ;; ends a case item, a pattern
+					 * comes next
+					 */
+					if (c == ';') {
+						if (statep->ls_scsparen.semi &&
+						    statep->ls_scsparen.ncase)
+							statep->ls_scsparen.inpat = 1;
+						statep->ls_scsparen.semi =
+						    !statep->ls_scsparen.semi;
+					} else if (c != ' ' && c != '\t')
+						statep->ls_scsparen.semi = 0;
+				}
+			}
 			if (statep->ls_scsparen.csstate)
 				/* previous char was \, this one is literal */
 				statep->ls_scsparen.csstate = 0;
@@ -518,10 +601,27 @@ yylex(int cf)
 				done = 1;
 			else if (state == SCSBRACE && c == /*{*/ '}')
 				done = 1;
-			else if (state == SCSPAREN && c == '(') /*)*/
-				statep->ls_scsparen.nparen++;
-			else if (state == SCSPAREN && c == /*(*/ ')')
-				done = --statep->ls_scsparen.nparen == 0;
+			else if (state == SCSPAREN && c == '(') /*)*/ {
+				if (!statep->ls_scsparen.inpat)
+					statep->ls_scsparen.nparen++;
+				/* else: ( of a case pattern, matched by its ) */
+			} else if (state == SCSPAREN && c == /*(*/ ')') {
+				if (statep->ls_scsparen.inpat)
+					statep->ls_scsparen.inpat = 0;
+				else
+					done = --statep->ls_scsparen.nparen == 0;
+			} else if (state == SCSPAREN && c == '#' && !csword) {
+				/* comment: copy it, ')' in it means nothing */
+				*wp++ = c;
+				csemit = 0;
+				while ((c2 = getsc()) != 0 && c2 != '\n') {
+					Xcheck(ws, wp);
+					*wp++ = c2;
+				}
+				ungetsc(c2);
+				statep->ls_scsparen.inword = 0;
+				statep->ls_scsparen.wlen = 0;
+			}
 			else if (state == SCSPAREN && c == '<') {
 				/* here document: its body is part of the
 				 * $(..) text and may hold anything, so it
@@ -563,27 +663,17 @@ yylex(int cf)
 					XcheckN(ws, wp, 2);
 					*wp++ = c;
 					c = c2;
-					PUSH_STATE(c2 == '(' /*)*/ ?
-					    SCSPAREN : SCSBRACE);
-					statep->ls_scsparen.nparen = 1;
-					statep->ls_scsparen.csstate = 0;
-					statep->ls_scsparen.nested = 1;
+					PUSH_CSSTATE(c2 == '(' /*)*/ ?
+					    SCSPAREN : SCSBRACE, 1);
 				} else
 					ungetsc(c2);
-			} else if (c == '`') {
-				PUSH_STATE(SCSBQUOTE);
-				statep->ls_scsparen.csstate = 0;
-				statep->ls_scsparen.nested = 1;
-			} else if (state != SCSDQUOTE && c == '\'') {
-				PUSH_STATE(SCSSQUOTE);
-				statep->ls_scsparen.csstate = 0;
-				statep->ls_scsparen.nested = 1;
+			} else if (c == '`')
+				PUSH_CSSTATE(SCSBQUOTE, 1);
+			else if (state != SCSDQUOTE && c == '\'') {
+				PUSH_CSSTATE(SCSSQUOTE, 1);
 				ignore_backslash_newline++;
-			} else if (c == '"') {
-				PUSH_STATE(SCSDQUOTE);
-				statep->ls_scsparen.csstate = 0;
-				statep->ls_scsparen.nested = 1;
-			}
+			} else if (c == '"')
+				PUSH_CSSTATE(SCSDQUOTE, 1);
 			if (done) {
 				nested = statep->ls_scsparen.nested;
 				POP_STATE();
@@ -626,9 +716,7 @@ yylex(int cf)
 						*s++ = COMSUB;
 						*s = '('; /*)*/
 						wp++;
-						statep->ls_scsparen.nparen = 1;
-						statep->ls_scsparen.csstate = 0;
-						statep->ls_scsparen.nested = 0;
+						INIT_CSSTATE(0);
 						state = statep->ls_state =
 						    SCSPAREN;
 					}
