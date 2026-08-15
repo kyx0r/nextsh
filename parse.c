@@ -30,6 +30,13 @@
 #define SPATTERN 11		/* parsing *(...|...) pattern (*+?@!) */
 #define STBRACE 12		/* parsing ${..[#%]..} */
 #define	SBRACEQ	13		/* inside "${}" */
+#define	SCSBRACE 14		/* inside ${} of a $() */
+#define	SCSDQUOTE 15		/* inside "" of a $() */
+#define	SCSSQUOTE 16		/* inside '' of a $() */
+#define	SCSBQUOTE 17		/* inside `` of a $() */
+
+/* here documents whose body can be skipped inside one $() word */
+#define	CSHERES	8
 
 /* Structure to keep track of the lexing state and the various pieces of info
  * needed for each particular state.
@@ -81,6 +88,8 @@ static int	getsc__(void);
 static void	getsc_line(Source *);
 static int	getsc_bn(void);
 static char	*get_brace_var(XString *, char *);
+static char	*get_cs_heredelim(XString *, char *, char **);
+static char	*skip_cs_heredoc(XString *, char *, const char *, int);
 static int	arraysub(char **);
 static const char *ungetsc(int);
 static void	gethere(void);
@@ -142,6 +151,12 @@ yylex(int cf)
 	char *wp;		/* output word pointer */
 	char *sp, *dp;
 	int c2;
+	int done;		/* raw comsub scan: current construct closed */
+	int nested;		/* raw comsub scan: not the outermost $( */
+	int csemit;		/* raw comsub scan: c still has to be copied */
+	char *cshere[CSHERES];	/* raw comsub scan: pending here delimiters */
+	int csheretab[CSHERES];	/* raw comsub scan: matching <<- flags */
+	int ncshere;
 
 
   Again:
@@ -155,6 +170,7 @@ yylex(int cf)
 
 	backslash_skip = 0;
 	ignore_backslash_newline = 0;
+	ncshere = 0;
 
 	if (cf&ONEWORD)
 		state = SWORD;
@@ -472,74 +488,113 @@ yylex(int cf)
 				goto Subst;
 			break;
 
-		case SCSPAREN: /* $( .. ) */
-			/* todo: deal with $(...) quoting properly
-			 * kludge to partly fake quoting inside $(..): nested
-			 * $(..) inside double quotes is handled by pushing
-			 * another SCSPAREN state (marked nested, so its ')'
-			 * is kept as text), but ${..} still isn't dealt with.
+		case SCSPAREN:	/* $( .. ) */
+		case SCSBRACE:	/* ${ .. } inside $( .. ) */
+		case SCSDQUOTE:	/* " .. " inside $( .. ) */
+		case SCSSQUOTE:	/* ' .. ' inside $( .. ) */
+		case SCSBQUOTE:	/* ` .. ` inside $( .. ) */
+			/* The body of $(..) is copied verbatim and lexed
+			 * again later, so all that is needed here is to find
+			 * the matching ')'.  Quotes and substitutions nest,
+			 * each one pushing its own state, since POSIX parses
+			 * the body as a script in its own right (quoting does
+			 * not carry over from the enclosing word).
 			 */
-			switch (statep->ls_scsparen.csstate) {
-			case 0: /* normal */
-				switch (c) {
-				case '(':
-					statep->ls_scsparen.nparen++;
-					break;
-				case ')':
-					statep->ls_scsparen.nparen--;
-					break;
-				case '\\':
-					statep->ls_scsparen.csstate = 1;
-					break;
-				case '"':
-					statep->ls_scsparen.csstate = 2;
-					break;
-				case '\'':
-					statep->ls_scsparen.csstate = 4;
-					ignore_backslash_newline++;
-					break;
-				}
-				break;
-
-			case 1: /* backslash in normal mode */
-			case 3: /* backslash in double quotes */
-				--statep->ls_scsparen.csstate;
-				break;
-
-			case 2: /* double quotes */
-				if (c == '"')
-					statep->ls_scsparen.csstate = 0;
-				else if (c == '\\')
-					statep->ls_scsparen.csstate = 3;
-				else if (c == '$') {
-					c2 = getsc();
-					if (c2 == '(') /*)*/ {
-						*wp++ = c;
-						c = c2;
-						PUSH_STATE(SCSPAREN);
-						statep->ls_scsparen.nparen = 1;
-						statep->ls_scsparen.csstate = 0;
-						statep->ls_scsparen.nested = 1;
-					} else
-						ungetsc(c2);
-				}
-				break;
-
-			case 4: /* single quotes */
+			done = 0;
+			csemit = 1;
+			if (statep->ls_scsparen.csstate)
+				/* previous char was \, this one is literal */
+				statep->ls_scsparen.csstate = 0;
+			else if (state == SCSSQUOTE) {
 				if (c == '\'') {
-					statep->ls_scsparen.csstate = 0;
+					done = 1;
 					ignore_backslash_newline--;
 				}
-				break;
+			} else if (c == '\\')
+				statep->ls_scsparen.csstate = 1;
+			else if (state == SCSBQUOTE)
+				done = c == '`';
+			else if (state == SCSDQUOTE && c == '"')
+				done = 1;
+			else if (state == SCSBRACE && c == /*{*/ '}')
+				done = 1;
+			else if (state == SCSPAREN && c == '(') /*)*/
+				statep->ls_scsparen.nparen++;
+			else if (state == SCSPAREN && c == /*(*/ ')')
+				done = --statep->ls_scsparen.nparen == 0;
+			else if (state == SCSPAREN && c == '<') {
+				/* here document: its body is part of the
+				 * $(..) text and may hold anything, so it
+				 * has to be copied without being scanned
+				 */
+				if ((c2 = getsc()) != '<')
+					ungetsc(c2);
+				else if (ncshere < CSHERES) {
+					XcheckN(ws, wp, 3);
+					*wp++ = c;
+					*wp++ = c2;
+					csemit = 0;
+					if ((c2 = getsc()) == '-')
+						*wp++ = c2;
+					else
+						ungetsc(c2);
+					csheretab[ncshere] = c2 == '-';
+					wp = get_cs_heredelim(&ws, wp,
+					    &cshere[ncshere]);
+					ncshere++;
+				} else {
+					XcheckN(ws, wp, 2);
+					*wp++ = c;
+					*wp++ = c2;
+					csemit = 0;
+				}
+			} else if (state == SCSPAREN && c == '\n' && ncshere) {
+				*wp++ = c;
+				csemit = 0;
+				for (c2 = 0; c2 < ncshere; c2++) {
+					wp = skip_cs_heredoc(&ws, wp,
+					    cshere[c2], csheretab[c2]);
+					afree(cshere[c2], ATEMP);
+				}
+				ncshere = 0;
+			} else if (c == '$') {
+				c2 = getsc();
+				if (c2 == '(' /*)*/ || c2 == '{' /*}*/) {
+					XcheckN(ws, wp, 2);
+					*wp++ = c;
+					c = c2;
+					PUSH_STATE(c2 == '(' /*)*/ ?
+					    SCSPAREN : SCSBRACE);
+					statep->ls_scsparen.nparen = 1;
+					statep->ls_scsparen.csstate = 0;
+					statep->ls_scsparen.nested = 1;
+				} else
+					ungetsc(c2);
+			} else if (c == '`') {
+				PUSH_STATE(SCSBQUOTE);
+				statep->ls_scsparen.csstate = 0;
+				statep->ls_scsparen.nested = 1;
+			} else if (state != SCSDQUOTE && c == '\'') {
+				PUSH_STATE(SCSSQUOTE);
+				statep->ls_scsparen.csstate = 0;
+				statep->ls_scsparen.nested = 1;
+				ignore_backslash_newline++;
+			} else if (c == '"') {
+				PUSH_STATE(SCSDQUOTE);
+				statep->ls_scsparen.csstate = 0;
+				statep->ls_scsparen.nested = 1;
 			}
-			if (statep->ls_scsparen.nparen == 0) {
-				int nested = statep->ls_scsparen.nested;
+			if (done) {
+				nested = statep->ls_scsparen.nested;
 				POP_STATE();
 				if (nested)
-					*wp++ = c; /* ')' of inner $() */
-				else
+					*wp++ = c; /* closer is part of text */
+				else {
 					*wp++ = 0; /* end of COMSUB */
-			} else
+					while (ncshere)
+						afree(cshere[--ncshere], ATEMP);
+				}
+			} else if (csemit)
 				*wp++ = c;
 			break;
 
@@ -1587,6 +1642,97 @@ get_brace_var(XString *wsp, char *wp)
 		Xcheck(*wsp, wp);
 		*wp++ = c;
 	}
+	return wp;
+}
+
+/*
+ * Copy the delimiter of a here document appearing inside a $(..) body,
+ * which is scanned verbatim, and return it unquoted in *strp.  Called
+ * with the leading <<[-] already copied; stops on the first character
+ * that cannot be part of the delimiter word (which is ungotten).
+ */
+static char *
+get_cs_heredelim(XString *wsp, char *wp, char **strp)
+{
+	XString ds;
+	char *dp;
+	int c, q;
+
+	Xinit(ds, dp, 32, ATEMP);
+	while ((c = getsc()) == ' ' || c == '\t') {
+		Xcheck(*wsp, wp);
+		*wp++ = c;
+	}
+	while (c && !ctype(c, C_LEX1) && c != ' ' && c != '\t') {
+		Xcheck(*wsp, wp);
+		*wp++ = c;
+		if (c == '\'' || c == '"') {
+			q = c;
+			while ((c = getsc()) != 0 && c != q) {
+				Xcheck(*wsp, wp);
+				*wp++ = c;
+				Xcheck(ds, dp);
+				*dp++ = c;
+			}
+			if (c) {
+				Xcheck(*wsp, wp);
+				*wp++ = c;
+			}
+		} else {
+			if (c == '\\' && (c = getsc()) != 0) {
+				Xcheck(*wsp, wp);
+				*wp++ = c;
+			}
+			if (c) {
+				Xcheck(ds, dp);
+				*dp++ = c;
+			}
+		}
+		c = getsc();
+	}
+	ungetsc(c);
+	Xcheck(ds, dp);
+	*dp++ = '\0';
+	*strp = Xclose(ds, dp);
+
+	return wp;
+}
+
+/*
+ * Copy the body of a here document inside a $(..) body, up to and
+ * including the line holding the delimiter (or eof).
+ */
+static char *
+skip_cs_heredoc(XString *wsp, char *wp, const char *delim, int skiptabs)
+{
+	XString ls;
+	char *lp, *line;
+	int c;
+
+	Xinit(ls, lp, 64, ATEMP);
+	ignore_backslash_newline++;
+	do {
+		lp = Xstring(ls, lp);
+		while ((c = getsc()) != 0 && c != '\n') {
+			Xcheck(*wsp, wp);
+			*wp++ = c;
+			Xcheck(ls, lp);
+			*lp++ = c;
+		}
+		if (c) {
+			Xcheck(*wsp, wp);
+			*wp++ = c;
+		}
+		Xcheck(ls, lp);
+		*lp = '\0';
+		line = Xstring(ls, lp);
+		if (skiptabs)
+			while (*line == '\t')
+				line++;
+	} while (c && strcmp(line, delim) != 0);
+	ignore_backslash_newline--;
+	Xfree(ls, lp);
+
 	return wp;
 }
 
