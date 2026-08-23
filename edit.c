@@ -323,12 +323,12 @@ isrch_putb(unsigned char c, int show)
 /*
  * Redraw the search on the line it started on: the search prompt, then
  * as much of the matching line as fits, with the cursor on the match.
- * prevw is the width the previous call drew, which is to be erased.
- * Returns the width drawn this time.
+ * The line is cleared first, so that neither what was on it before the
+ * search started nor a longer earlier match is left behind.
  */
-static int
+static void
 isrch_show(const char *pat, int back, int failed, const char *line, int len,
-    int off, int prevw)
+    int off)
 {
 	char		buf[ISRCH_MAX + 32];
 	const char	*p;
@@ -338,6 +338,7 @@ isrch_show(const char *pat, int back, int failed, const char *line, int len,
 	shf_snprintf(buf, sizeof buf, "(%s%si-search)`%s': ",
 	    failed ? "failed " : "", back ? "reverse-" : "", pat);
 	x_putc('\r');
+	x_puts(KILL_LINE);
 	for (p = buf; *p != '\0' && col < cols; p++)
 		col += isrch_putb(*p, 1);
 
@@ -362,19 +363,11 @@ isrch_show(const char *pat, int back, int failed, const char *line, int len,
 	if (ccol < 0)
 		ccol = col;
 
-	/* erase what the previous, longer, line left behind */
-	while (col < prevw) {
-		x_putc(' ');
-		col++;
-	}
-	width = col;
 	while (col > ccol) {
 		x_putc('\b');
 		col--;
 	}
 	x_flush();
-
-	return width;
 }
 
 /* the history entry matching pat, or -1 if there is none */
@@ -428,11 +421,11 @@ x_isearch(int (*getch)(void), int (*classify)(int), int back,
 	const char	*cur = line;
 	int		curlen = len;
 	int		plen = 0, hist = -1, off = 0, failed = 0;
-	int		c, n, act, step, width = 0;
+	int		c, n, act, step;
 
 	pat[0] = '\0';
 	for (;;) {
-		width = isrch_show(pat, back, failed, cur, curlen, off, width);
+		isrch_show(pat, back, failed, cur, curlen, off);
 		if ((c = getch()) < 0) {
 			c = 0;
 			break;
@@ -511,9 +504,7 @@ x_isearch(int (*getch)(void), int (*classify)(int), int back,
 
 	/* leave the line clear for the caller to draw on */
 	x_putc('\r');
-	while (width-- > 0)
-		x_putc(' ');
-	x_putc('\r');
+	x_puts(KILL_LINE);
 	x_flush();
 
 	*histp = hist;

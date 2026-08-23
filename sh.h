@@ -1472,6 +1472,7 @@ void    set_array(const char *, int, char **);
 
 #define	BEL		0x07
 #define	CLEAR_SCREEN	"\033[H\033[2J"	/* ANSI: home cursor, erase all */
+#define	KILL_LINE	"\033[K"	/* ANSI: erase to end of line */
 
 #undef CTRL
 #define CTRL(x)		((x) == '?' ? 0x7F : (x) & 0x1F)	/* ASCII */
