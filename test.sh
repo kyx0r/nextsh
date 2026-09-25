@@ -316,6 +316,70 @@ t 'for loop over a substitution' '12' <<'S'
 for i in $(echo 1 2); do printf '%s' "$i"; done; echo
 S
 
+printf '%s\n' '─── Parameter operators before parentheses ───────────────────────────────────'
+
+t 'here document alternate and default words' '[unset] ||(DEFAULT)|(DEFAULT)
+[empty] (NOLOAD)|||(DEFAULT)
+[set] (NOLOAD)|(NOLOAD)|yes|yes' <<'S'
+for state in unset empty set; do
+	unset V
+	case $state in empty) V=;; set) V=yes;; esac
+	cat <<EOF
+[$state] ${V+(NOLOAD)}|${V:+(NOLOAD)}|${V-(DEFAULT)}|${V:-(DEFAULT)}
+EOF
+done
+S
+
+t 'here document assignment and error words' '(DEFAULT)|(DEFAULT)|(DEFAULT)
+(DEFAULT)|(DEFAULT)|(DEFAULT)' <<'S'
+unset V
+cat <<EOF
+${V=(DEFAULT)}|${V?(ERROR)}|${V:?(ERROR)}
+EOF
+V=
+cat <<EOF
+${V:=(DEFAULT)}|${V?(ERROR)}|${V:?(ERROR)}
+EOF
+S
+
+t 'unquoted and quoted alternate and error words' '<(NOLOAD)>
+<(NOLOAD)>
+<yes>
+<yes>
+<(NOLOAD)>' <<'S'
+V=yes
+printf '<%s>\n' ${V+(NOLOAD)} ${V:+(NOLOAD)} ${V?(ERROR)} ${V:?(ERROR)} "${V+(NOLOAD)}"
+S
+
+t 'nested and unused alternate words' '<(DEFAULT)>' <<'S'
+unset V
+printf '<%s>\n' ${V+(${V?(unused)})} "${V:-${V+(unused)}(DEFAULT)}"
+S
+
+t 'patterns in substitution words still work' '+(unlikely_nextsh_file)
+b
+aaa' <<'S'
+V=yes
+printf '%s\n' ${V++(unlikely_nextsh_file)}
+V=aaab
+printf '%s\n' ${V##+(a)} ${V%%+(b)}
+S
+
+t 'sourced PE linker script template' '.bss   : { *(.bss) }
+.bss BLOCK(__section_alignment__) (NOLOAD) : { *(.bss) }' <<'S'
+template=$0.template
+trap 'rm -f "$template"' EXIT
+cat > "$template" <<'T'
+cat <<EOF
+.bss ${RELOCATING+BLOCK(__section_alignment__)} ${RELOCATING+(NOLOAD)} : { *(.bss) }
+EOF
+T
+unset RELOCATING
+. "$template"
+RELOCATING=yes
+. "$template"
+S
+
 printf '%s\n' '─── Rejected input ───────────────────────────────────────────────────────────'
 
 terr 'unterminated $(' <<'S'
