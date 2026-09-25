@@ -432,7 +432,14 @@ yylex(int cf)
 						ungetsc(c);
 						PUSH_STATE(STBRACE);
 					} else {
-						ungetsc(c);
+						/* Consume the operator before lexing the
+						 * word, so +( and ?( cannot become
+						 * extended glob patterns here.
+						 */
+						if (ctype(c, C_SUBOP1))
+							*wp++ = CHAR, *wp++ = c;
+						else
+							ungetsc(c);
 						if (state == SDQUOTE ||
 						    state == SBRACEQ)
 							PUSH_STATE(SBRACEQ);
