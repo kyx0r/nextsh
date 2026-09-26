@@ -3585,7 +3585,7 @@ static int	outofwin(void);
 static void	rewindow(void);
 static int	newcol(int, int);
 static void	display(char *, char *, int);
-static void	ed_mov_opt(int, char *);
+static void	ed_mov_opt(int, char *, const char *);
 static int	expand_word(int);
 static int	complete_word(int, int);
 static int	print_expansions(struct edstate *);
@@ -5313,6 +5313,7 @@ display(char *wb1, char *wb2, int leftside)
 {
 	char	*twb1;	/* pointer into the buffer to display */
 	char	*twb2;	/* pointer into the previous display buffer */
+	char	*end;	/* one past the generated row, including its space */
 	static int lastb = -1; /* last byte# written from wb1, if UTF-8 */
 	int	 cur;	/* byte# in the main command line buffer */
 	int	 col;	/* display column loop variable */
@@ -5377,7 +5378,8 @@ display(char *wb1, char *wb2, int leftside)
 		}
 	} else
 		moreright++;
-	*twb1 = ' ';
+	*twb1++ = ' ';
+	end = twb1;
 
 	/*
 	 * Update the terminal display with data from wb1.
@@ -5386,7 +5388,8 @@ display(char *wb1, char *wb2, int leftside)
 
 	col = pwidth;
 	cnt = winwidth;
-	for (twb1 = wb1, twb2 = wb2; cnt; twb1++, twb2++) {
+	for (twb1 = wb1, twb2 = wb2; cnt && twb1 < end;
+	    twb1++, twb2++) {
 		if (*twb1 != *twb2) {
 
 			/*
@@ -5407,7 +5410,7 @@ display(char *wb1, char *wb2, int leftside)
 			}
 
 			if (cur_col != col)
-				ed_mov_opt(col, wb1);
+				ed_mov_opt(col, wb1, end);
 
 			/*
 			 * Always write complete characters, and
@@ -5415,7 +5418,7 @@ display(char *wb1, char *wb2, int leftside)
 			 */
 
 			x_putc(*twb1);
-			while (isu8cont(twb1[1])) {
+			while (twb1 + 1 < end && isu8cont(twb1[1])) {
 				x_putc(*++twb1);
 				twb2++;
 			}
@@ -5448,7 +5451,7 @@ display(char *wb1, char *wb2, int leftside)
 	else
 		mc = ' ';
 	if (mc != morec) {
-		ed_mov_opt(pwidth + winwidth + 1, wb1);
+		ed_mov_opt(pwidth + winwidth + 1, wb1, end);
 		x_putc(mc);
 		cur_col++;
 		morec = mc;
@@ -5458,14 +5461,14 @@ display(char *wb1, char *wb2, int leftside)
 	/* Move the cursor to its new position. */
 
 	if (cur_col != ncol) {
-		ed_mov_opt(ncol, wb1);
+		ed_mov_opt(ncol, wb1, end);
 		lastb = -1;
 	}
 }
 
 /* Move the display cursor to display column number col. */
 static void
-ed_mov_opt(int col, char *wb)
+ed_mov_opt(int col, char *wb, const char *end)
 {
 	int ci;
 
@@ -5494,13 +5497,19 @@ ed_mov_opt(int col, char *wb)
 	/* Advance the cursor. */
 
 	ci = pwidth;
-	while (ci < col || (ci > pwidth && isu8cont(*wb))) {
+	while (wb < end &&
+	    (ci < col || (ci > pwidth && isu8cont(*wb)))) {
 		ci = newcol((unsigned char)*wb, ci);
 		if (ci == pwidth)
 			ci++;
 		if (ci > cur_col)
 			x_putc(*wb);
 		wb++;
+	}
+	/* Beyond the generated row, advance with spaces, not buffer reads. */
+	while (ci < col) {
+		if (++ci > cur_col)
+			x_putc(' ');
 	}
 	cur_col = ci;
 }
