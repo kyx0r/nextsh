@@ -40,7 +40,6 @@ extern char **environ;
 
 static void	reclaim(void);
 static void	remove_temps(struct temp *tp);
-static int	is_restricted(char *name);
 static void	init_username(void);
 
 const char *kshname;
@@ -405,8 +404,6 @@ main(int argc, char *argv[])
 			include(env_file, 0, NULL, 1);
 	}
 
-	if (is_restricted(argv[0]) || is_restricted(str_val(global("SHELL"))))
-		restricted = 1;
 	if (restricted) {
 		static const char *const restr_com[] = {
 			"typeset", "-r", "PATH",
@@ -801,17 +798,4 @@ remove_temps(struct temp *tp)
 		if (tp->pid == procpid) {
 			unlink(tp->name);
 		}
-}
-
-/* Returns true if name refers to a restricted shell */
-static int
-is_restricted(char *name)
-{
-	char *p;
-
-	if ((p = strrchr(name, '/')))
-		name = p + 1;
-	/* accepts rsh, rksh, rnextsh */
-	return !strcmp(name, "rsh") || !strcmp(name, "rksh") ||
-	    !strcmp(name, "rnextsh");
 }
