@@ -1,7 +1,8 @@
 #!/bin/sh
 # Nextsh test suite - POSIX shell
 # Tests the lexer, mostly the parts that scan the raw text of a $(..)
-# body: quoting, here documents, comments and case patterns.
+# body: quoting, here documents, comments and case patterns. Also tests
+# vi-mode UTF-8 redraw and window buffers through a PTY (requires Python 3).
 #
 # The shell under test is $SH (./sh by default), the shell running this
 # script can be any POSIX shell.
@@ -399,6 +400,337 @@ S
 terr 'unterminated case' <<'S'
 echo "$(case x in x) echo hi;;)"
 S
+
+# Keep the PTY driver here so ./test.sh is the single test entry point.
+# Python emits one PASS/FAIL record per case; shell counters below include
+# these in the same summary as the non-interactive tests.
+printf '%s\n' '─── Vi UTF-8 redraw and window buffers ────────────────────────────────────────'
+
+if command -v python3 >/dev/null 2>&1; then
+	python3 - "$SH" > "$TMPFILE" <<'PY_PTY'
+import codecs
+import fcntl
+import os
+from pathlib import Path
+import pty
+import select
+import shutil
+import signal
+import struct
+import sys
+import tempfile
+import termios
+import time
+import unittest
+
+SHELL = str(Path(sys.argv[1]).resolve())
+work = Path(tempfile.mkdtemp(prefix='nextsh-vi-tests-'))
+base_env = dict(os.environ, ENV='/dev/null', HOME=str(work),
+                HISTFILE='/dev/null', TERM='xterm', LC_ALL='C.UTF-8',
+                ASAN_OPTIONS=os.environ.get('ASAN_OPTIONS',
+                                            'detect_leaks=0:halt_on_error=1'),
+                UBSAN_OPTIONS=os.environ.get('UBSAN_OPTIONS',
+                                             'halt_on_error=1:print_stacktrace=1'))
+
+# These screen assertions use single-column Unicode characters: the
+# editor currently counts each non-ASCII character as one display column.
+class Terminal:
+    def __init__(self, width=24):
+        self.width = width
+        self.row = [' '] * width
+        self.col = 0
+        self.escape = ''
+        self.decode = codecs.getincrementaldecoder('utf-8')('strict')
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:
+            env = dict(base_env, PS1='> ', PS2='+ ', COLUMNS=str(width))
+            fcntl.ioctl(0, termios.TIOCSWINSZ,
+                        struct.pack('HHHH', 24, width, 0, 0))
+            os.execve(SHELL, [SHELL, '-i'], env)
+        try:
+            self.read()
+            self.send(b'set -o vi\n')
+        except BaseException:
+            self.close()
+            raise
+
+    def read(self):
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if not select.select([self.fd], [], [], 0.08)[0]:
+                return
+            data = os.read(self.fd, 65536)
+            for ch in self.decode.decode(data):
+                if self.escape:
+                    self.escape += ch
+                    if self.escape == '\x1b[':
+                        continue
+                    if ch.isalpha():
+                        if ch == 'H':
+                            self.col = 0
+                        elif ch in 'JK':
+                            self.row = [' '] * self.width
+                        else:
+                            raise AssertionError('unexpected escape ' + repr(self.escape))
+                        self.escape = ''
+                    continue
+                if ch == '\x1b':
+                    self.escape = ch
+                elif ch == '\r':
+                    self.col = 0
+                elif ch == '\n':
+                    self.row = [' '] * self.width
+                elif ch == '\b':
+                    self.col = max(0, self.col - 1)
+                elif ch == '\a':
+                    pass
+                else:
+                    if self.col < self.width:
+                        self.row[self.col] = ch
+                    self.col += 1
+
+    def send(self, data):
+        os.write(self.fd, data.encode() if isinstance(data, str) else data)
+        self.read()
+
+    def close(self):
+        os.kill(self.pid, signal.SIGKILL)
+        os.waitpid(self.pid, 0)
+        os.close(self.fd)
+
+
+class ViUTF8(unittest.TestCase):
+    def setUp(self):
+        self.t = Terminal()
+
+    def tearDown(self):
+        self.t.close()
+
+    def check(self, text, cursor, marker=' '):
+        self.assertEqual(''.join(self.t.row[:len(text) + 2]), '> ' + text)
+        self.assertEqual(self.t.col, cursor + 2)
+        self.assertEqual(''.join(self.t.row[len(text) + 2:self.t.width - 2]),
+                         ' ' * max(0, self.t.width - len(text) - 4))
+        self.assertEqual(self.t.row[self.t.width - 2], marker)
+
+    def test_insert_move_delete_and_redraw(self):
+        self.t.send('aé€𝄞z')
+        self.check('aé€𝄞z', 5)
+        self.t.send(b'\x1bhh')
+        self.check('aé€𝄞z', 2)
+        self.t.send(b'x')
+        self.check('aé𝄞z', 2)
+        self.t.send(b'iX\x1b')
+        self.check('aéX𝄞z', 2)
+        self.t.send(b'\x0c')
+        self.check('aéX𝄞z', 2)
+
+    def test_different_utf8_lengths_and_shared_prefix(self):
+        self.t.send('éê€𝄞abc')
+        self.t.send(b'\x1b0x')
+        self.check('ê€𝄞abc', 0)
+        self.t.send(b'x')
+        self.check('€𝄞abc', 0)
+        self.t.send(b'iZ\x1b')
+        self.check('Z€𝄞abc', 0)
+        self.t.send(b'lx')
+        self.check('Z𝄞abc', 1)
+
+    def test_fragmented_input(self):
+        for ch in 'é€𝄞':
+            for byte in ch.encode():
+                self.t.send(bytes([byte]))
+        self.check('é€𝄞', 3)
+        self.t.send(b'\x7f')
+        self.check('é€', 2)
+        self.t.send(b'\x1b0i')
+        for byte in 'ê'.encode():
+            self.t.send(bytes([byte]))
+        self.check('êé€', 1)
+        self.t.send(b'\x1bl')
+        self.check('êé€', 1)
+
+    def test_right_margin_and_scrolling(self):
+        # winwidth = 24 - 2 (prompt) - 3 = 19; a command-mode
+        # character in its last column must include all its bytes.
+        self.t.send('a' * 18)
+        self.t.send(b'\x1b')
+        self.t.send('a€')
+        self.t.send(b'\x1b0$')
+        self.check('a' * 18 + '€', 18)
+        self.t.send(b'\x0c')
+        self.check('a' * 18 + '€', 18)
+        self.t.send('Aê𝄞xyz')
+        self.assertEqual(self.t.row[self.t.width - 2], '<')
+        self.t.send(b'\x1b0')
+        self.check('a' * 18 + '€', 0, '>')
+
+    def test_history_search_ending_on_utf8(self):
+        self.t.send(': abcé\n')
+        self.t.send(b'\x1b\x12abc\x1b')
+        # Search recall and subsequent end-of-line motion must land on
+        # the leading byte of the final character, never its continuation.
+        self.t.send(b'$')
+        self.check(': abcé', 5)
+        self.t.send(b'x')
+        self.check(': abc', 4)
+
+    def test_show8_and_ascii_controls(self):
+        self.t.send('set -o vi-show8\n')
+        self.t.send('é')
+        self.check('M-CM-)', 6)
+        self.t.send(b'\x15abc\x16\x01')
+        self.check('abc^A', 5)
+        self.t.send(b'\x1b0x')
+        self.check('bc^A', 0)
+
+
+def case(name, payload, width=80, prompt='P> ', show8=False):
+    pid, fd = pty.fork()
+    if pid == 0:
+        fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack('HHHH', 24, width, 0, 0))
+        env = dict(base_env, PS1=prompt, COLUMNS=str(width))
+        args = [SHELL, '-o', 'vi']
+        if show8:
+            args += ['-o', 'vi-show8']
+        os.execve(SHELL, args + ['-i'], env)
+    output = bytearray()
+    eof = False
+
+    def drain(seconds):
+        nonlocal eof
+        deadline = time.monotonic() + seconds
+        while not eof and time.monotonic() < deadline:
+            if not select.select([fd], [], [], max(0, deadline-time.monotonic()))[0]:
+                break
+            try:
+                data = os.read(fd, 65536)
+            except OSError:
+                data = b''
+            if not data:
+                eof = True
+            output.extend(data)
+
+    def send(data):
+        for start in range(0, len(data), 64):
+            if eof:
+                return
+            chunk = data[start:start+64]
+            while chunk:
+                try:
+                    count = os.write(fd, chunk)
+                except OSError:
+                    return
+                chunk = chunk[count:]
+            drain(.01)
+        drain(.15)
+
+    done = 0
+    try:
+        drain(.3)
+        send(b': ' + payload)
+        # Enter command mode, move both ways, delete/undo, and redraw.
+        send(b'\x1b0$xu\x0c\n')
+        send(b'printf "VERIFIED:%s\\n" done\n')
+        send(b'exit\n')
+        deadline = time.monotonic() + 5
+        done, status = os.waitpid(pid, os.WNOHANG)
+        while not done and time.monotonic() < deadline:
+            drain(.1)
+            if eof:
+                time.sleep(.01)
+            done, status = os.waitpid(pid, os.WNOHANG)
+        if not done:
+            os.kill(pid, signal.SIGKILL)
+            done, status = os.waitpid(pid, 0)
+        drain(.1)
+    finally:
+        if not done:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+        os.close(fd)
+    ok = (os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+          and b'VERIFIED:done\r\n' in output
+          and b'runtime error:' not in output
+          and b'AddressSanitizer' not in output)
+    print(('PASS ' if ok else 'FAIL ') + 'vi window: ' + name, flush=True)
+    if not ok:
+        (work / (name + '.log')).write_bytes(output)
+    return ok
+
+
+class ShellResult(unittest.TestResult):
+    def report(self, test, ok):
+        name = test._testMethodName[len('test_'):].replace('_', ' ')
+        print(('PASS ' if ok else 'FAIL ') + 'vi UTF-8: ' + name, flush=True)
+
+    def addSuccess(self, test):
+        super().addSuccess(test)
+        self.report(test, True)
+
+    def addFailure(self, test, error):
+        super().addFailure(test, error)
+        self.report(test, False)
+        print(self.failures[-1][1], file=sys.stderr)
+
+    def addError(self, test, error):
+        super().addError(test, error)
+        self.report(test, False)
+        print(self.errors[-1][1], file=sys.stderr)
+
+
+utf8_result = ShellResult()
+unittest.defaultTestLoader.loadTestsFromTestCase(ViUTF8).run(utf8_result)
+
+payloads = [
+    ('ascii', b'a' * 300),
+    ('utf2', ('é' * 200).encode()),
+    ('utf3', ('界' * 200).encode()),
+    ('utf4', ('😀' * 200).encode()),
+    ('continuations', b'\x80' * 4093),  # LINE - 1, including ': '
+    ('truncated', b'\xe2\x82' * 1500),
+    ('mixed', ('abcé界😀' * 150).encode()),
+]
+results = []
+for width in (12, 20, 80, 132, 256):
+    for name, payload in payloads:
+        results.append(case(name + '-w' + str(width), payload, width))
+results.append(case('empty-prompt', b'a' * 300, prompt=''))
+results.append(case('long-prompt', ('界é😀' * 200).encode(), prompt='prompt' * 40))
+results.append(case('show8', b'\x80\xff' * 1500, show8=True))
+ok = utf8_result.wasSuccessful() and all(results)
+if ok:
+    shutil.rmtree(work)
+else:
+    print('PTY failure logs:', work, file=sys.stderr)
+sys.exit(0 if ok else 1)
+PY_PTY
+	pty_status=$?
+	pty_fail=0
+	while read -r result name; do
+		N=$((N + 1))
+		printf 'Test %d: "%s"\n' "$N" "$name"
+		case $result in
+		PASS) PASS=$((PASS + 1)) ;;
+		*)
+			FAIL=$((FAIL + 1))
+			pty_fail=$((pty_fail + 1))
+			printf 'FAIL\n'
+			;;
+		esac
+	done < "$TMPFILE"
+	# A missing module, exec failure, or other driver error must not be
+	# mistaken for success just because it produced no failure records.
+	if [ "$pty_status" -ne 0 ] && [ "$pty_fail" -eq 0 ]; then
+		N=$((N + 1))
+		FAIL=$((FAIL + 1))
+		printf 'Test %d: "PTY test driver"\nFAIL (exit %d)\n' "$N" "$pty_status"
+	fi
+else
+	N=$((N + 1))
+	FAIL=$((FAIL + 1))
+	printf 'Test %d: "PTY test driver"\nFAIL (Python 3 is required)\n' "$N"
+fi
 
 printf '\n%s\n' '─── Summary ──────────────────────────────────────────────────────────────────'
 
