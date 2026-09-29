@@ -2,7 +2,8 @@
 # Nextsh test suite - POSIX shell
 # Tests the lexer, mostly the parts that scan the raw text of a $(..)
 # body: quoting, here documents, comments and case patterns. Also tests
-# vi-mode UTF-8 redraw and window buffers through a PTY (requires Python 3).
+# vi-mode UTF-8 redraw, window buffers and completion through a PTY
+# (requires Python 3).
 #
 # The shell under test is $SH (./sh by default), the shell running this
 # script can be any POSIX shell.
@@ -404,11 +405,12 @@ S
 # Keep the PTY driver here so ./test.sh is the single test entry point.
 # Python emits one PASS/FAIL record per case; shell counters below include
 # these in the same summary as the non-interactive tests.
-printf '%s\n' '─── Vi UTF-8 redraw and window buffers ────────────────────────────────────────'
+printf '%s\n' '─── Interactive editing and completion ───────────────────────────────────────'
 
 if command -v python3 >/dev/null 2>&1; then
 	python3 - "$SH" > "$TMPFILE" <<'PY_PTY'
 import codecs
+import errno
 import fcntl
 import os
 from pathlib import Path
@@ -679,8 +681,134 @@ class ShellResult(unittest.TestResult):
         print(self.errors[-1][1], file=sys.stderr)
 
 
+class CompletionSession:
+    def __init__(self, directory):
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:
+            try:
+                os.chdir(directory)
+                fcntl.ioctl(0, termios.TIOCSWINSZ,
+                            struct.pack('HHHH', 24, 200, 0, 0))
+                env = base_env.copy()
+                env.update(HOME=directory, ENV='/dev/null', HISTFILE='/dev/null',
+                           PS1='NEXTSH> ', PS2='MORE> ', TERM='xterm',
+                           LC_ALL='C.UTF-8')
+                env.setdefault('ASAN_OPTIONS', 'detect_leaks=0:abort_on_error=1')
+                env.setdefault('UBSAN_OPTIONS', 'halt_on_error=1:print_stacktrace=1')
+                os.execve(SHELL, [SHELL, '-i'], env)
+            except BaseException:
+                os._exit(127)
+        self.log = b''
+
+    def read(self, prompt=False):
+        data = b''
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if select.select([self.fd], [], [], .05)[0]:
+                try:
+                    chunk = os.read(self.fd, 65536)
+                except OSError as error:
+                    if error.errno != errno.EIO:
+                        raise
+                    chunk = b''
+                if not chunk:
+                    raise AssertionError('shell exited unexpectedly')
+                data += chunk
+                self.log += chunk
+            elif data and (not prompt or data.endswith(b'NEXTSH> ')):
+                return data
+        raise AssertionError('timed out waiting for ' + ('prompt' if prompt else 'completion'))
+
+    def send(self, data, prompt=False):
+        os.write(self.fd, data)
+        return self.read(prompt)
+
+    def close(self):
+        try:
+            os.kill(self.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        os.waitpid(self.pid, 0)
+        os.close(self.fd)
+
+
+def completion_case(mode, ifs, kind, name=None):
+    label = '%s / IFS %s / %s' % (mode, ifs, kind)
+    if name is not None:
+        label += ' / ' + repr(name)
+    session = None
+    ok = False
+    with tempfile.TemporaryDirectory(prefix='completion-', dir=str(work)) as directory:
+        try:
+            if kind == 'unique':
+                target = name
+                os.mkdir(os.path.join(directory, target))
+                command = b'cd case\t'
+            elif kind == 'nested':
+                target = 'case café space/子 😀 folder'
+                os.makedirs(os.path.join(directory, target))
+                command = b'cd case\t'
+            else:
+                target = 'case café common-a'
+                os.mkdir(os.path.join(directory, target))
+                os.mkdir(os.path.join(directory, 'case café common-b'))
+                command = b'cd case\t'
+            session = CompletionSession(directory)
+            session.read(prompt=True)
+            session.send(('set -o %s\n' % mode).encode(), prompt=True)
+            setting = {'default': ':', 'colon': 'IFS=:', 'empty': "IFS=''",
+                       'unset': 'unset IFS', 'newline': "IFS='\n'"}[ifs]
+            session.send((setting + '\n').encode(), prompt=True)
+            screen = session.send(command)
+            if name is None or ' ' in name:
+                assert b'\\ ' in screen, 'completion did not escape spaces'
+            # Tabs are expanded for terminal display; execution below checks
+            # that the completed tab remains part of the directory argument.
+            if kind == 'nested':
+                session.send('子\t'.encode())
+            elif kind == 'common-prefix':
+                session.send(b'a\t')
+            session.send(b'\n', prompt=True)
+            # Check the executed argument, not merely what the terminal echoed.
+            result = os.path.join(directory, 'result')
+            session.send(('printf \'%s\\n\' "$PWD" > "' + result +
+                          '"\n').encode(), prompt=True)
+            with open(result, 'rb') as output:
+                actual = output.read()
+            expected = (os.path.join(directory, target) + '\n').encode()
+            assert actual == expected, 'cd reached %r, expected %r' % (actual, expected)
+            assert not any(report in session.log for report in
+                           (b'AddressSanitizer', b'UndefinedBehaviorSanitizer',
+                            b'runtime error:')), 'sanitizer report'
+            ok = True
+            print('PASS completion: ' + label, flush=True)
+        except Exception as error:
+            print('FAIL completion: ' + label, flush=True)
+            print(label + ': ' + str(error), file=sys.stderr)
+            if session is not None:
+                log = work / ('completion-%s-%s-%s.log' % (mode, ifs,
+                              kind if name is None else names.index(name)))
+                log.write_bytes(session.log)
+                print('  PTY log:', log, file=sys.stderr)
+        finally:
+            if session is not None:
+                session.close()
+    return ok
+
+
 utf8_result = ShellResult()
 unittest.defaultTestLoader.loadTestsFromTestCase(ViUTF8).run(utf8_result)
+
+names = ['case ascii space', 'case café space', 'case 子 folder',
+         'case 😀 folder', 'case é子😀 two spaces', 'case space before é',
+         'case é $cash;[x]', 'case é\ttab']
+completion_results = []
+for mode in ('vi', 'emacs'):
+    for ifs in ('default', 'colon', 'empty', 'unset', 'newline'):
+        for name in names:
+            completion_results.append(completion_case(mode, ifs, 'unique', name))
+        completion_results.append(completion_case(mode, ifs, 'nested'))
+        completion_results.append(completion_case(mode, ifs, 'common-prefix'))
 
 payloads = [
     ('ascii', b'a' * 300),
@@ -698,7 +826,8 @@ for width in (12, 20, 80, 132, 256):
 results.append(case('empty-prompt', b'a' * 300, prompt=''))
 results.append(case('long-prompt', ('界é😀' * 200).encode(), prompt='prompt' * 40))
 results.append(case('show8', b'\x80\xff' * 1500, show8=True))
-ok = utf8_result.wasSuccessful() and all(results)
+ok = (utf8_result.wasSuccessful() and all(results)
+      and all(completion_results))
 if ok:
     shutil.rmtree(work)
 else:
