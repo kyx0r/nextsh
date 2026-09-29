@@ -2436,8 +2436,11 @@ expand(char *cp,	/* input word */
 				type = XSUBMID;
 			}
 
-			/* age tilde_ok info - ~ code tests second bit */
-			tilde_ok <<= 1;
+			/* age tilde_ok info - ~ code tests second bit;
+			 * masking keeps the shift defined, since the bits
+			 * above the tested one carry no information
+			 */
+			tilde_ok = (tilde_ok << 1) & 3;
 			/* mark any special second pass chars */
 			if (!quote)
 				switch (c) {

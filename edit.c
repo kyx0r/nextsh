@@ -3585,7 +3585,7 @@ static int	outofwin(void);
 static void	rewindow(void);
 static int	newcol(int, int);
 static void	display(char *, char *, int);
-static void	ed_mov_opt(int, char *);
+static void	ed_mov_opt(int, char *, const char *);
 static int	expand_word(int);
 static int	complete_word(int, int);
 static int	print_expansions(struct edstate *);
@@ -3820,8 +3820,10 @@ vi_search_hist(int back)
 		if (off > es->linelen)
 			off = es->linelen;
 		es->cursor = off;
-		if (insert == 0 && es->cursor == es->linelen && es->cursor > 0)
-			es->cursor--;
+		if (insert == 0 && es->cursor == es->linelen)
+			while (es->cursor > 0)
+				if (!isu8cont(es->cbuf[--es->cursor]))
+					break;
 		hnum = ohnum = hist;
 		modified = 0;
 		/* the recalled line is not what was being inserted */
@@ -4258,7 +4260,8 @@ vi_cmd(int argcnt, const char *cmd)
 		case 'a':
 			modified = 1; hnum = hlast;
 			if (es->linelen != 0)
-				while (isu8cont(es->cbuf[++es->cursor]))
+				while (++es->cursor < es->linelen &&
+				    isu8cont(es->cbuf[es->cursor]))
 					continue;
 			insert = INSERT;
 			break;
@@ -4817,13 +4820,21 @@ bracktype(int ch)
  *	Non user interface editor routines below here
  */
 
+/*
+ * The number of bytes one display column can occupy in the window
+ * buffers: the length of the longest UTF-8 sequence.  Control characters
+ * expand to "^x" or "M-x", that is two bytes for two columns, and tabs
+ * expand to spaces, so neither can exceed this.
+ */
+#define U8_MAX_BYTES	4
+
 static int	cur_col;		/* current display column */
 static int	pwidth;			/* display columns needed for prompt */
 static int	prompt_trunc;		/* how much of prompt to truncate */
 static int	prompt_skip;		/* how much of prompt to skip */
 static int	winwidth;		/* available column positions */
 static char	*wbuf[2];		/* current & previous window buffer */
-static int	wbuf_len;		/* length of window buffers (x_cols-3)*/
+static size_t	wbuf_bytes;		/* allocated bytes per window buffer */
 static int	win;			/* number of window buffer in use */
 static char	morec;			/* more character at right of window */
 static char	holdbuf[LINE];		/* place to hold last edit buffer */
@@ -4882,6 +4893,7 @@ static void
 edit_reset(char *buf, size_t len)
 {
 	const char *p;
+	size_t	 need;
 
 	es = &ebuf;
 	es->cbuf = buf;
@@ -4901,13 +4913,29 @@ edit_reset(char *buf, size_t len)
 		pwidth -= prompt_trunc;
 	} else
 		prompt_trunc = 0;
-	if (!wbuf_len || wbuf_len != x_cols - 3) {
-		wbuf_len = x_cols - 3;
-		wbuf[0] = aresize(wbuf[0], wbuf_len, APERM);
-		wbuf[1] = aresize(wbuf[1], wbuf_len, APERM);
+	/*
+	 * Size the window buffers.  display() stores one complete display
+	 * column at a time, so a multi-byte character occupies as many bytes
+	 * as it is long instead of the one byte per column the column count
+	 * suggests: a row can hold up to winwidth display columns, that is
+	 * U8_MAX_BYTES * (x_cols - 3) bytes.  Columns do not bound a row
+	 * holding bytes that are not valid UTF-8: a raw continuation byte,
+	 * or a truncated sequence, takes a column only at the left edge, so
+	 * one row can also hold every byte of the line, at most LINE - 1 of
+	 * them, padded out to the right margin.  Take the larger of the two
+	 * bounds, plus room for the byte display() appends.  Cast before
+	 * adding, as COLUMNS may set x_cols as high as INT_MAX.
+	 */
+	need = (size_t) (x_cols - 3) * U8_MAX_BYTES;
+	if ((size_t) (LINE - 1) + (size_t) (x_cols - 3) > need)
+		need = (size_t) (LINE - 1) + (size_t) (x_cols - 3);
+	if (wbuf_bytes < need + 1) {
+		wbuf_bytes = need + 1;
+		wbuf[0] = aresize(wbuf[0], wbuf_bytes, APERM);
+		wbuf[1] = aresize(wbuf[1], wbuf_bytes, APERM);
 	}
-	(void) memset(wbuf[0], ' ', wbuf_len);
-	(void) memset(wbuf[1], ' ', wbuf_len);
+	(void) memset(wbuf[0], ' ', wbuf_bytes);
+	(void) memset(wbuf[1], ' ', wbuf_bytes);
 	winwidth = x_cols - pwidth - 3;
 	win = 0;
 	morec = ' ';
@@ -5166,7 +5194,7 @@ do_clear_screen(void)
 static void
 redraw_line(int neednl, int full)
 {
-	(void) memset(wbuf[win], ' ', wbuf_len);
+	(void) memset(wbuf[win], ' ', wbuf_bytes);
 	if (neednl) {
 		x_putc('\r');
 		x_putc('\n');
@@ -5179,6 +5207,24 @@ redraw_line(int neednl, int full)
 static void
 refresh_line(int leftside)
 {
+	int start, len;
+	unsigned char ch;
+
+	/* Input arrives a byte at a time.  Do not send an unfinished UTF-8
+	 * character to the terminal, followed by cursor motion or a redraw.
+	 * A non-continuation byte ends a malformed sequence normally.
+	 */
+	if (insert && !Flag(FVISHOW8) && es->cursor > 0) {
+		start = es->cursor - 1;
+		while (start > 0 && isu8cont(es->cbuf[start]))
+			start--;
+		ch = es->cbuf[start];
+		len = ch >= 0xc2 && ch <= 0xdf ? 2 :
+		    ch >= 0xe0 && ch <= 0xef ? 3 :
+		    ch >= 0xf0 && ch <= 0xf4 ? 4 : 1;
+		if (es->cursor - start < len)
+			return;
+	}
 	if (outofwin())
 		rewindow();
 	display(wbuf[1 - win], wbuf[win], leftside);
@@ -5272,14 +5318,25 @@ newcol(int ch, int col)
 	return col + char_len(ch);
 }
 
-/* Display wb1 assuming that wb2 is currently displayed. */
+/*
+ * Display wb1 assuming that wb2 is currently displayed.
+ *
+ * A window buffer holds one screen row: the display columns of the window,
+ * stored as the bytes that produce them, so a multi-byte character takes
+ * up as many bytes as it is long.  The row is padded with spaces up to the
+ * right margin and terminated by one more space.  Both row traversal and
+ * cursor motion operate on complete characters, not matching byte offsets.
+ * edit_reset() allocates room for the longest row this can produce.
+ */
 static void
 display(char *wb1, char *wb2, int leftside)
 {
 	char	*twb1;	/* pointer into the buffer to display */
 	char	*twb2;	/* pointer into the previous display buffer */
-	static int lastb = -1; /* last byte# written from wb1, if UTF-8 */
+	char	*end;	/* one past the generated row, including its space */
+	char	*next1, *next2; /* next display column in each row */
 	int	 cur;	/* byte# in the main command line buffer */
+	int	 start;	/* first byte of the current character */
 	int	 col;	/* display column loop variable */
 	int	 ncol;	/* display column of the cursor */
 	int	 cnt;	/* remaining display columns to fill */
@@ -5294,9 +5351,9 @@ display(char *wb1, char *wb2, int leftside)
 
 	ncol = col = 0;
 	cur = es->winleft;
-	moreright = 0;
 	twb1 = wb1;
 	while (col < winwidth && cur < es->linelen) {
+		start = cur;
 		if (cur == es->cursor && leftside)
 			ncol = col + pwidth;
 		if ((ch = es->cbuf[cur]) == '\t') {
@@ -5323,10 +5380,14 @@ display(char *wb1, char *wb2, int leftside)
 					*twb1++ = ch;
 					if (col == 0 || !isu8cont(ch))
 						col++;
+					/* Include the whole character, even at the margin. */
+					while (cur + 1 < es->linelen &&
+					    isu8cont(es->cbuf[cur + 1]))
+						*twb1++ = es->cbuf[++cur];
 				}
 			}
 		}
-		if (cur == es->cursor && !leftside)
+		if (start == es->cursor && !leftside)
 			ncol = col + pwidth - 1;
 		cur++;
 	}
@@ -5340,9 +5401,10 @@ display(char *wb1, char *wb2, int leftside)
 			*twb1++ = ' ';
 			col++;
 		}
-	} else
-		moreright++;
-	*twb1 = ' ';
+	}
+	moreright = cur < es->linelen;
+	*twb1++ = ' ';
+	end = twb1;
 
 	/*
 	 * Update the terminal display with data from wb1.
@@ -5351,50 +5413,26 @@ display(char *wb1, char *wb2, int leftside)
 
 	col = pwidth;
 	cnt = winwidth;
-	for (twb1 = wb1, twb2 = wb2; cnt; twb1++, twb2++) {
-		if (*twb1 != *twb2) {
-
-			/*
-			 * When a byte changes in the middle of a UTF-8
-			 * character, back up to the start byte, unless
-			 * the previous byte was the last one written.
-			 */
-
-			if (isu8cont(*twb1)) {
-				if (col > pwidth)
-					col--;
-				if (lastb >= 0 && twb1 == wb1 + lastb + 1)
-					cur_col = col;
-				else while (twb1 > wb1 && isu8cont(*twb1)) {
-					twb1--;
-					twb2--;
-				}
-			}
-
-			if (cur_col != col)
-				ed_mov_opt(col, wb1);
-
-			/*
-			 * Always write complete characters, and
-			 * advance all pointers accordingly.
-			 */
-
-			x_putc(*twb1);
-			while (isu8cont(twb1[1])) {
-				x_putc(*++twb1);
-				twb2++;
-			}
-			lastb = *twb1 & 0x80 ? twb1 - wb1 : -1;
-			cur_col++;
-		} else if (twb1 > wb1 && isu8cont(*twb1))
-			continue;
-
-		/*
-		 * For changed continuation bytes, we backed up.
-		 * For unchanged ones, we jumped to the next byte.
-		 * So, getting here, we had a real column.
+	for (twb1 = wb1, twb2 = wb2; cnt && twb1 < end;
+	    twb1 = next1, twb2 = next2) {
+		/* Byte offsets need not agree: replacing an ASCII character
+		 * with UTF-8 changes every following byte offset, not column.
+		 * Compare and write complete characters in corresponding columns.
 		 */
-
+		next1 = twb1 + 1;
+		while (next1 < end && isu8cont(*next1))
+			next1++;
+		next2 = twb2 + 1;
+		while (next2 < wb2 + wbuf_bytes && isu8cont(*next2))
+			next2++;
+		if (next1 - twb1 != next2 - twb2 ||
+		    memcmp(twb1, twb2, next1 - twb1) != 0) {
+			if (cur_col != col)
+				ed_mov_opt(col, wb1, end);
+			while (twb1 < next1)
+				x_putc(*twb1++);
+			cur_col++;
+		}
 		col++;
 		cnt--;
 	}
@@ -5413,24 +5451,21 @@ display(char *wb1, char *wb2, int leftside)
 	else
 		mc = ' ';
 	if (mc != morec) {
-		ed_mov_opt(pwidth + winwidth + 1, wb1);
+		ed_mov_opt(pwidth + winwidth + 1, wb1, end);
 		x_putc(mc);
 		cur_col++;
 		morec = mc;
-		lastb = -1;
 	}
 
 	/* Move the cursor to its new position. */
 
-	if (cur_col != ncol) {
-		ed_mov_opt(ncol, wb1);
-		lastb = -1;
-	}
+	if (cur_col != ncol)
+		ed_mov_opt(ncol, wb1, end);
 }
 
 /* Move the display cursor to display column number col. */
 static void
-ed_mov_opt(int col, char *wb)
+ed_mov_opt(int col, char *wb, const char *end)
 {
 	int ci;
 
@@ -5459,13 +5494,19 @@ ed_mov_opt(int col, char *wb)
 	/* Advance the cursor. */
 
 	ci = pwidth;
-	while (ci < col || (ci > pwidth && isu8cont(*wb))) {
+	while (wb < end &&
+	    (ci < col || (ci > pwidth && isu8cont(*wb)))) {
 		ci = newcol((unsigned char)*wb, ci);
 		if (ci == pwidth)
 			ci++;
 		if (ci > cur_col)
 			x_putc(*wb);
 		wb++;
+	}
+	/* Beyond the generated row, advance with spaces, not buffer reads. */
+	while (ci < col) {
+		if (++ci > cur_col)
+			x_putc(' ');
 	}
 	cur_col = ci;
 }
