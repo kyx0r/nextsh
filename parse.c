@@ -393,6 +393,15 @@ yylex(int cf)
 				*wp++ = OQUOTE;
 				PUSH_STATE(SDQUOTE);
 				break;
+			case '~':
+				/* no tilde expansion in ${x-~} in a here-
+				 * document, as in "${x-~}"
+				 */
+				if ((cf & HEREDOC) && state == SBRACE) {
+					*wp++ = QCHAR, *wp++ = c;
+					break;
+				}
+				goto Subst;
 			default:
 				goto Subst;
 			}
