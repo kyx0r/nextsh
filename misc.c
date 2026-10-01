@@ -1411,10 +1411,10 @@ print_value_quoted(const char *s)
 
 	/* Test if any quotes are needed */
 	for (p = s; *p; p++)
-		if (ctype(*p, C_QUOTE))
+		if (ctype(*p, C_QUOTE) || *p == '~')
 			break;
 	if (!*p) {
-		shprintf("%s", s);
+		shprintf("%s", *s ? s : "''");
 		return;
 	}
 	for (p = s; *p; p++) {
