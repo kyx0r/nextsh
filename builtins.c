@@ -1428,6 +1428,14 @@ c_whence(char **wp)
 		}
 		if (!tp)
 			tp = findcom(id, fcflags);
+		if ((tp->type == CEXEC || tp->type == CTALIAS) &&
+		    !(tp->flag & ISSET)) {
+			/* not found: a diagnostic, not output */
+			if (vflag)
+				warningf(false, "%s: not found", id);
+			ret = 1;
+			continue;
+		}
 		if (vflag || (tp->type != CALIAS && tp->type != CEXEC &&
 		    tp->type != CTALIAS))
 			shprintf("%s", id);
