@@ -352,6 +352,16 @@ yylex(int cf)
 			switch (c) {
 			case '\\':
 				c = getsc();
+				/* in "${v-word}" as in "...": a \ that does
+				 * not quote $ ` " \ or } is itself
+				 */
+				if (state == SBRACEQ && c && c != '\\' &&
+				    c != '$' && c != '`' && c != '"' &&
+				    c != '}') {
+					*wp++ = CHAR, *wp++ = '\\';
+					ungetsc(c);
+					break;
+				}
 				if (c) /* trailing \ is lost */
 					*wp++ = QCHAR, *wp++ = c;
 				break;
