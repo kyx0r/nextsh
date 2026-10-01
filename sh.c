@@ -340,8 +340,11 @@ main(int argc, char *argv[])
 		s->file = argv[argi++];
 		s->u.shf = shf_open(s->file, O_RDONLY, 0, SHF_MAPHI|SHF_CLEXEC);
 		if (s->u.shf == NULL) {
-			exstat = 127; /* POSIX */
-			errorf("%s: %s", s->file, strerror(errno));
+			/* POSIX: 127 if not found, else 126 */
+			int e = errno;
+
+			warningf(true, "%s: %s", s->file, strerror(e));
+			exit(e == ENOENT || e == ENOTDIR ? 127 : 126);
 		}
 		kshname = s->file;
 	} else {
