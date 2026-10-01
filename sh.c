@@ -47,6 +47,7 @@ pid_t	kshpid;
 pid_t	procpid;
 uid_t	ksheuid;
 int	exstat;
+int	trap_exstat = -1;
 int	subst_exstat;
 const char *safe_prompt;
 int	disable_subst;

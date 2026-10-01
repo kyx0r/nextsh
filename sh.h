@@ -255,6 +255,7 @@ extern	pid_t	procpid;	/* pid of executing process */
 extern	uid_t	ksheuid;	/* effective uid of shell */
 extern	int	exstat;		/* exit status */
 extern	int	subst_exstat;	/* exit status of last $(..)/`..` */
+extern	int	trap_exstat;	/* $? before the running trap, or -1 */
 extern	const char *safe_prompt; /* safe prompt if PS1 substitution fails */
 extern	char	username[];	/* username for \u prompt expansion */
 extern	int	disable_subst;	/* disable substitution during evaluation */

@@ -525,7 +525,10 @@ c_exitreturn(char **wp)
 			warningf(true, "%s: bad number", arg);
 		} else
 			exstat = n;
-	}
+	} else if (trap_exstat >= 0)
+		/* in a trap action: the $? from before it */
+		exstat = trap_exstat;
+	trap_exstat = -1;
 	if (wp[0][0] == 'r') { /* return */
 		struct env *ep;
 
