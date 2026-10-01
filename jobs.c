@@ -1132,7 +1132,9 @@ j_waitj(Job *j,
 		rv = j->status;
 
 
+	/* a script that waits for a job learns its fate from $? */
 	if (!(flags & JW_ASYNCNOTIFY) &&
+	    (!(flags & JW_INTERRUPT) || Flag(FTALKING)) &&
 	    (!Flag(FMONITOR) || j->state != PSTOPPED)) {
 		j_print(j, JP_SHORT, shl_out);
 		shf_flush(shl_out);
