@@ -262,6 +262,9 @@ c_read(char **wp)
 	XString cs, xs = { NULL, NULL, 0, NULL };
 	struct tbl *vp;
 	char *xp = NULL;
+	XString qs;
+	char *qp, *line, *quoted, *val;
+	int i, j, k, len, start, end;
 
 	while ((optc = ksh_getopt(wp, &builtin_opt, "prsu,")) != -1)
 		switch (optc) {
@@ -328,72 +331,109 @@ c_read(char **wp)
 
 	if (savehist)
 		Xinit(xs, xp, 128, ATEMP);
+	/* Read the line; qs marks the characters that were escaped,
+	 * which are never field separators.
+	 */
 	expanding = 0;
 	Xinit(cs, cp, 128, ATEMP);
-	for (; *wp != NULL; wp++) {
-		for (cp = Xstring(cs, cp); ; ) {
-			if (c == '\n' || c == EOF)
-				break;
-			while (1) {
-				c = shf_getc(shf);
-				if (c == '\0')
-					continue;
-				if (c == EOF && shf_error(shf) &&
-				    shf->errno_ == EINTR) {
-					/* Was the offending signal one that
-					 * would normally kill a process?
-					 * If so, pretend the read was killed.
-					 */
-					ecode = fatal_trap_check();
+	Xinit(qs, qp, 128, ATEMP);
+	for (;;) {
+		c = shf_getc(shf);
+		if (c == '\0')
+			continue;
+		if (c == EOF && shf_error(shf) && shf->errno_ == EINTR) {
+			/* Was the offending signal one that would normally
+			 * kill a process?  If so, pretend the read was
+			 * killed.
+			 */
+			ecode = fatal_trap_check();
 
-					/* non fatal (eg, CHLD), carry on */
-					if (!ecode) {
-						shf_clearerr(shf);
-						continue;
-					}
-				}
-				break;
-			}
-			if (savehist) {
-				Xcheck(xs, xp);
-				Xput(xs, xp, c);
-			}
-			Xcheck(cs, cp);
-			if (expanding) {
-				expanding = 0;
-				if (c == '\n') {
-					c = 0;
-					if (Flag(FTALKING_I) && isatty(fd)) {
-						/* set prompt in case this is
-						 * called from .profile or $ENV
-						 */
-						set_prompt(PS2);
-						pprompt(prompt, 0);
-					}
-				} else if (c != EOF)
-					Xput(cs, cp, c);
+			/* non fatal (eg, CHLD), carry on */
+			if (!ecode) {
+				shf_clearerr(shf);
 				continue;
 			}
-			if (expand && c == '\\') {
-				expanding = 1;
-				continue;
-			}
-			if (c == '\n' || c == EOF)
-				break;
-			if (ctype(c, C_IFS)) {
-				if (Xlength(cs, cp) == 0 && ctype(c, C_IFSWS))
-					continue;
-				if (wp[1])
-					break;
-			}
-			Xput(cs, cp, c);
 		}
-		/* strip trailing IFS white space from last variable */
-		if (!wp[1])
-			while (Xlength(cs, cp) && ctype(cp[-1], C_IFS) &&
-			    ctype(cp[-1], C_IFSWS))
-				cp--;
-		Xput(cs, cp, '\0');
+		if (savehist) {
+			Xcheck(xs, xp);
+			Xput(xs, xp, c);
+		}
+		if (expanding) {
+			expanding = 0;
+			if (c == '\n') {
+				if (Flag(FTALKING_I) && isatty(fd)) {
+					/* set prompt in case this is
+					 * called from .profile or $ENV
+					 */
+					set_prompt(PS2);
+					pprompt(prompt, 0);
+				}
+			} else if (c != EOF) {
+				Xcheck(cs, cp);
+				Xput(cs, cp, c);
+				Xcheck(qs, qp);
+				Xput(qs, qp, 1);
+			}
+			if (c != EOF)
+				continue;
+		}
+		if (c == '\n' || c == EOF)
+			break;
+		if (expand && c == '\\') {
+			expanding = 1;
+			continue;
+		}
+		Xcheck(cs, cp);
+		Xput(cs, cp, c);
+		Xcheck(qs, qp);
+		Xput(qs, qp, 0);
+	}
+	len = Xlength(cs, cp);
+	line = Xstring(cs, cp);
+	quoted = Xstring(qs, qp);
+
+	/* Split it like field splitting does, the last variable gets
+	 * the rest of the line.
+	 */
+#define RD_IFS(k)	(!quoted[k] && ctype(line[k], C_IFS))
+#define RD_IFSWS(k)	(RD_IFS(k) && ctype(line[k], C_IFSWS))
+	i = 0;
+	for (; *wp != NULL; wp++) {
+		while (i < len && RD_IFSWS(i))
+			i++;
+		start = i;
+		if (wp[1]) {
+			while (i < len && !RD_IFS(i))
+				i++;
+			end = i;
+			/* the separator: IFS white space around at most
+			 * one other IFS character
+			 */
+			while (i < len && RD_IFSWS(i))
+				i++;
+			if (i < len && RD_IFS(i))
+				i++;
+		} else {
+			end = len;
+			while (end > start && RD_IFSWS(end - 1))
+				end--;
+			/* a single field followed by one separator
+			 * loses that separator
+			 */
+			for (k = start; k < end && !RD_IFS(k); k++)
+				;
+			if (k < end) {
+				j = k;
+				while (j < end && RD_IFSWS(j))
+					j++;
+				if (j < end && RD_IFS(j))
+					j++;
+				if (j == end)
+					end = k;
+			}
+			i = len;
+		}
+		val = str_nsave(line + start, end - start, ATEMP);
 		vp = global(*wp);
 		/* Must be done before setting export. */
 		if (vp->flag & RDONLY) {
@@ -403,11 +443,16 @@ c_read(char **wp)
 		}
 		if (Flag(FEXPORT))
 			typeset(*wp, EXPORT, 0, 0, 0);
-		if (!setstr(vp, Xstring(cs, cp), KSH_RETURN_ERROR)) {
-		    shf_flush(shf);
-		    return 1;
+		if (!setstr(vp, val, KSH_RETURN_ERROR)) {
+			shf_flush(shf);
+			return 1;
 		}
+		afree(val, ATEMP);
 	}
+#undef RD_IFS
+#undef RD_IFSWS
+	Xfree(cs, cp);
+	Xfree(qs, qp);
 
 	shf_flush(shf);
 	if (savehist) {
