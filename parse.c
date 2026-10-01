@@ -997,7 +997,7 @@ Done:
 
 		/* { */
 		if ((cf & KEYWORD) && (p = ktsearch(&keywords, ident, h)) &&
-		    (!(cf & ESACONLY) || p->val.i == ESAC || p->val.i == '}')) {
+		    (!(cf & ESACONLY) || p->val.i == ESAC)) {
 			afree(yylval.cp, ATEMP);
 			return p->val.i;
 		}
@@ -2425,11 +2425,9 @@ caselist(void)
 	int c;
 
 	c = token(CONTIN|KEYWORD|ALIAS);
-	/* A {...} can be used instead of in...esac for case statements */
+	/* not ksh's {...} instead of in...esac: } may be a pattern */
 	if (c == IN)
 		c = ESAC;
-	else if (c == '{')
-		c = '}';
 	else
 		syntaxerr(NULL);
 	t = tl = NULL;
