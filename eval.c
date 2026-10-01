@@ -2510,8 +2510,11 @@ expand(char *cp,	/* input word */
 					}
 					break;
 				case '=':
-					/* Note first unquoted = for ~ */
-					if (!(f & DOTEMP_) && !saw_eq) {
+					/* Note first unquoted = for ~, in
+					 * assignments only (not echo a=~)
+					 */
+					if (!(f & DOTEMP_) && !saw_eq &&
+					    (f & DOASNTILDE)) {
 						saw_eq = 1;
 						tilde_ok = 1;
 					}
