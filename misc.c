@@ -1000,19 +1000,41 @@ has_globbing(const char *xp, const char *xpe)
 			else
 				nest++;
 		} else if (c == '|') {
-			if (in_bracket && !bnest)	/* *(a[foo|bar]) */
-				return 0;
+			/* *(a[foo|bar]): the [ is an ordinary one */
+			if (in_bracket && !bnest)
+				in_bracket = 0;
 		} else if (c == /*(*/ ')') {
-			if (in_bracket) {
-				if (!bnest--)		/* *(a[b)c] */
-					return 0;
-			} else if (nest)
-				nest--;
+			if (in_bracket && bnest)
+				bnest--;
+			else {
+				/* *(a[b)c]: the [ is an ordinary one */
+				in_bracket = 0;
+				if (nest)
+					nest--;
+			}
 		}
 		/* else must be a MAGIC-MAGIC, or MAGIC-!, MAGIC--, MAGIC-]
 			 MAGIC-{, MAGIC-,, MAGIC-} */
 	}
-	return saw_glob && !in_bracket && !nest;
+	/* a [ left open is an ordinary one, do_gmatch() knows */
+	return saw_glob && !nest;
+}
+
+/* Does the bracket expression starting at p end before pe? */
+static int
+bracket_closed(const unsigned char *p, const unsigned char *pe)
+{
+	if (p + 1 < pe && ISMAGIC(p[0]) && p[1] == '!')
+		p += 2;
+	/* a ] first is a member */
+	if (p < pe && *p == ']')
+		p++;
+	else if (p + 1 < pe && ISMAGIC(p[0]) && p[1] == ']')
+		p += 2;
+	for (; p + 1 < pe; p++)
+		if (ISMAGIC(p[0]) && p[1] == ']')
+			return 1;
+	return 0;
 }
 
 /* Function must return either 0 or 1 (assumed by code for 0x80|'!') */
@@ -1037,6 +1059,12 @@ do_gmatch(const unsigned char *s, const unsigned char *se,
 		}
 		switch (*p++) {
 		case '[':
+			/* a [ without a closing ] is an ordinary [ */
+			if (!bracket_closed(p, pe)) {
+				if (sc != '[')
+					return 0;
+				break;
+			}
 			if (sc == 0 || (p = cclass(p, sc)) == NULL)
 				return 0;
 			break;
