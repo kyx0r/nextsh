@@ -1198,11 +1198,37 @@ posix_cclass(const unsigned char *pattern, int test, const unsigned char **ep)
 	return rval;
 }
 
+/*
+ * A collating symbol [.c.] or equivalence class [=c=] at p, which in
+ * the C locale are the character c: set *cp to c and return the
+ * pointer past it, or return NULL if there is none.
+ */
+static const unsigned char *
+collsym(const unsigned char *p, int *cp)
+{
+	int c, delim;
+
+	if (ISMAGIC(*p))
+		p++;
+	if (*p++ != '[' || ((delim = *p++) != '.' && delim != '='))
+		return NULL;
+	if (ISMAGIC(*p))
+		p++;
+	if ((c = *p++) == '\0' || *p++ != delim)
+		return NULL;
+	if (ISMAGIC(*p))
+		p++;
+	if (*p++ != ']')
+		return NULL;
+	*cp = c;
+	return p;
+}
+
 static const unsigned char *
 cclass(const unsigned char *p, int sub)
 {
 	int c, d, rv, not, found = 0;
-	const unsigned char *orig_p = p;
+	const unsigned char *orig_p = p, *q;
 
 	if ((not = (ISMAGIC(*p) && *++p == '!')))
 		p++;
@@ -1225,8 +1251,9 @@ cclass(const unsigned char *p, int sub)
 				break;
 		}
 
-		c = *p++;
-		if (ISMAGIC(c)) {
+		if ((q = collsym(p, &c)) != NULL)
+			p = q;
+		else if (ISMAGIC(c = *p++)) {
 			c = *p++;
 			if ((c & 0x80) && !ISMAGIC(c)) {
 				c &= 0x7f;/* extended pattern matching: *+?@! */
@@ -1241,8 +1268,9 @@ cclass(const unsigned char *p, int sub)
 		if (ISMAGIC(p[0]) && p[1] == '-' &&
 		    (!ISMAGIC(p[2]) || p[3] != ']')) {
 			p += 2; /* MAGIC- */
-			d = *p++;
-			if (ISMAGIC(d)) {
+			if ((q = collsym(p, &d)) != NULL)
+				p = q;
+			else if (ISMAGIC(d = *p++)) {
 				d = *p++;
 				if ((d & 0x80) && !ISMAGIC(d))
 					d &= 0x7f;
