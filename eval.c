@@ -581,8 +581,8 @@ export(struct tbl *vp, const char *val)
  * set its attributes (INTEGER, RDONLY, EXPORT, TRACE, LJUST, RJUST, ZEROFIL,
  * LCASEV, UCASEV_AL), and optionally set its value if an assignment.
  */
-/* set to 1 by c_typeset, to report a readonly variable with bi_errorf(),
- * or to 3, to just warn; then set typeset_bierr to 2 and return NULL
+/* set by c_typeset: report a readonly variable with bi_errorf(), set
+ * typeset_bierr to 2 and return NULL
  */
 int typeset_bierr;
 
@@ -651,10 +651,7 @@ typeset(const char *var, int set, int clr, int field, int base)
 		 * which doesn't exit the shell after command
 		 */
 		if (bierr) {
-			if (bierr == 1)
-				bi_errorf("%s: is read only", tvar);
-			else
-				warningf(true, "%s: is read only", tvar);
+			bi_errorf("%s: is read only", tvar);
 			typeset_bierr = 2;
 			return NULL;
 		}
