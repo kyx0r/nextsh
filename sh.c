@@ -404,13 +404,21 @@ main(int argc, char *argv[])
 	if (Flag(FPRIVILEGED))
 		include("/etc/suid_profile", 0, NULL, 1);
 	else if (Flag(FTALKING)) {
-		char *env_file;
+		char *volatile env_file = null;
 
-		/* include $ENV */
-		env_file = str_val(global("ENV"));
-		env_file = substitute(env_file, DOTILDE);
-		if (*env_file != '\0')
-			include(env_file, 0, NULL, 1);
+		/* include $ENV; an error expanding it (${x?msg}) is
+		 * reported but is no reason to exit
+		 */
+		newenv(E_ERRH);
+		if (!sigsetjmp(genv->jbuf, 0))
+			env_file = str_save(substitute(str_val(global("ENV")),
+			    DOTILDE), APERM);
+		quitenv(NULL);
+		if (env_file != null) {
+			if (*env_file != '\0')
+				include(env_file, 0, NULL, 1);
+			afree(env_file, APERM);
+		}
 	}
 
 	if (restricted) {
