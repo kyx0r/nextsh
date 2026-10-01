@@ -448,8 +448,12 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
 				break;
 			}
 			tp = findcom(cp, FC_BI);
-			if (tp == NULL)
-				errorf("builtin: %s: not a builtin", cp);
+			if (tp == NULL) {
+				warningf(true, "builtin: %s: not a builtin",
+				    cp);
+				rv = 1;
+				goto Leave;
+			}
 			continue;
 		} else if (tp->val.f == c_exec) {
 			if (ap[1] == NULL)
