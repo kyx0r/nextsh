@@ -1056,6 +1056,10 @@ c_cd(char **wp)
 			simplify_path(Xstr(xs));
 			rval = chdir(try = Xstr(xs));
 		}
+		/* the full path may be too long where dir is not */
+		if (rval == -1 && errno == ENAMETOOLONG && !cdnode &&
+		    *dir != '/')
+			rval = chdir(dir);
 	} while (rval == -1 && cdpath != NULL);
 
 	if (rval == -1) {
@@ -1128,7 +1132,8 @@ c_pwd(char **wp)
 	}
 	p = current_wd[0] ? (physical ? get_phys_path(current_wd) : current_wd) :
 	    NULL;
-	if (p && access(p, R_OK) == -1)
+	/* too long to check is not wrong */
+	if (p && access(p, R_OK) == -1 && errno != ENAMETOOLONG)
 		p = NULL;
 	if (!p) {
 		freep = p = ksh_get_wd(NULL, 0);
