@@ -553,6 +553,10 @@ shell(Source *volatile s, volatile int toplevel)
 	volatile int ran = 0;
 	/* eval and . in an if condition, etc. */
 	volatile int xflags = shell_xerrok ? XERROK : 0;
+	/* command eval: a syntax error is an ordinary failure */
+	volatile int regular_eval = s->type == SWORDS &&
+	    !(builtin_flag & SPEC_BI);
+	volatile int parsing = 0;
 	int i;
 
 	shell_xerrok = 0;
@@ -565,6 +569,11 @@ shell(Source *volatile s, volatile int toplevel)
 		really_exit = 0;
 	i = sigsetjmp(genv->jbuf, 0);
 	if (i) {
+		if (i == LERROR && parsing && regular_eval) {
+			source = old_source;
+			quitenv(NULL);
+			return exstat = 2;
+		}
 		switch (i) {
 		case LINTR: /* we get here if SIGINT not caught or ignored */
 		case LERROR:
@@ -625,7 +634,9 @@ shell(Source *volatile s, volatile int toplevel)
 			set_prompt(PS1);
 		}
 
+		parsing = 1;
 		t = compile(s);
+		parsing = 0;
 		if (t != NULL && t->type == TEOF) {
 			if (wastty && Flag(FIGNOREEOF) && --attempts > 0) {
 				shellf("Use `exit' to leave ksh\n");
