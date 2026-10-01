@@ -521,7 +521,8 @@ yylex(int cf)
 				 * since sh/at&t-ksh translate the \" to " in
 				 * "`..\"..`".
 				 */
-				statep->ls_sbquote.indquotes = 0;
+				/* a here-document counts as double quotes */
+				statep->ls_sbquote.indquotes = !!(cf & HEREDOC);
 				Lex_state *s = statep;
 				Lex_state *base = state_info.base;
 				while (1) {
