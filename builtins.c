@@ -493,29 +493,63 @@ c_eval(char **wp)
 	return (rv);
 }
 
+/* print the trap command that sets the trap of p; if all, also when it
+ * has the default action
+ */
+static void
+trap_print(Trap *p, int all)
+{
+	char *s = p->trap;
+
+	if (s == NULL && traps_inherited)
+		s = p->otrap;
+	if (s == NULL && !all)
+		return;
+	shprintf("trap -- ");
+	if (s == NULL)
+		shprintf("-");
+	else
+		print_value_quoted(s);
+	shprintf(" %s\n", p->name);
+}
+
 int
 c_trap(char **wp)
 {
-	int i, rv = 0;
+	int i, rv = 0, pflag = 0, optc;
 	char *s;
 	Trap *p;
 
-	if (ksh_getopt(wp, &builtin_opt, null) == '?')
-		return 1;
+	while ((optc = ksh_getopt(wp, &builtin_opt, "p")) != -1)
+		switch (optc) {
+		case 'p':
+			pflag = 1;
+			break;
+		case '?':
+			return 1;
+		}
 	wp += builtin_opt.optind;
 
-	if (*wp == NULL) {
+	if (*wp == NULL || pflag) {
+		/* -p: also the conditions with the default action, as
+		 * "trap -- - NAME", and only those named if any are
+		 */
 		for (p = sigtraps, i = NSIG+1; --i >= 0; p++) {
-			s = p->trap;
-			if (s == NULL && traps_inherited)
-				s = p->otrap;
-			if (s != NULL) {
-				shprintf("trap -- ");
-				print_value_quoted(s);
-				shprintf(" %s\n", p->name);
-			}
+			if (pflag && *wp != NULL)
+				break;
+			if (p->name == NULL ||
+			    (pflag && p->signal == SIGERR_))
+				continue;
+			trap_print(p, pflag);
 		}
-		return 0;
+		for (; *wp != NULL; wp++) {
+			if ((p = gettrap(*wp, true)) == NULL) {
+				warningf(true, "trap: bad signal %s", *wp);
+				rv = 1;
+			} else
+				trap_print(p, 1);
+		}
+		return rv;
 	}
 	traps_inherited = 0;
 
