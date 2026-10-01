@@ -15,7 +15,7 @@
 static int	comexec(struct op *, struct tbl *volatile, char **,
 		    int volatile, volatile int *);
 static void	scriptexec(struct op *, char **);
-static int	call_builtin(struct tbl *, char **);
+static int	call_builtin(struct tbl *, char **, int);
 static int	iosetup(struct ioword *, struct tbl *);
 static int	herein(const char *, int);
 static char	*do_selectargs(char **, bool);
@@ -492,7 +492,11 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
 			break;
 		tp = findcom(ap[0], fcflags & (FC_BI|FC_FUNC));
 	}
-	if (keepasn_ok && (!ap[0] || (tp && (tp->flag & KEEPASN))))
+	/* Without assignments "command set" and "command shift" need no
+	 * block either, which would throw away the $@ they change.
+	 */
+	if ((keepasn_ok || !t->vars[0]) &&
+	    (!ap[0] || (tp && (tp->flag & KEEPASN))))
 		type_flags = 0;
 	else {
 		/* create new variable/function block */
@@ -537,8 +541,9 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
 
 	switch (tp->type) {
 	case CSHELL:			/* shell built-in */
-		rv = call_builtin(tp, ap);
 		builtin_xerrok = (flags & XERROK) || *xerrok;
+		/* command makes special builtins regular */
+		rv = call_builtin(tp, ap, !keepasn_ok);
 		break;
 
 	case CFUNC:			/* function call */
@@ -769,7 +774,7 @@ shcomexec(char **wp)
 	tp = ktsearch(&builtins, *wp, hash(*wp));
 	if (tp == NULL)
 		internal_errorf("%s: %s", __func__, *wp);
-	return call_builtin(tp, wp);
+	return call_builtin(tp, wp, 0);
 }
 
 /*
@@ -1061,12 +1066,14 @@ search(const char *name, const char *path,
 }
 
 static int
-call_builtin(struct tbl *tp, char **wp)
+call_builtin(struct tbl *tp, char **wp, int regular)
 {
 	int rv;
 
 	builtin_argv0 = wp[0];
 	builtin_flag = tp->flag;
+	if (regular)
+		builtin_flag &= ~(SPEC_BI|KEEPASN);
 	shf_reopen(1, SHF_WR, shl_stdout);
 	shl_stdout_ok = 1;
 	ksh_getopt_reset(&builtin_opt, GF_ERROR);
@@ -1305,7 +1312,7 @@ do_selectargs(char **ap, bool print_menu)
 		if (print_menu || !*str_val(global("REPLY")))
 			pr_menu(ap);
 		shellf("%s", str_val(global("PS3")));
-		if (call_builtin(findcom("read", FC_BI), (char **) read_args))
+		if (call_builtin(findcom("read", FC_BI), (char **) read_args, 0))
 			return NULL;
 		s = str_val(global("REPLY"));
 		if (*s) {
