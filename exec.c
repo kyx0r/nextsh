@@ -1089,7 +1089,12 @@ call_builtin(struct tbl *tp, char **wp, int regular)
 	shl_stdout_ok = 1;
 	ksh_getopt_reset(&builtin_opt, GF_ERROR);
 	rv = (*tp->val.f)(wp);
-	shf_flush(shl_stdout);
+	/* pwd >/dev/full fails */
+	if (shf_flush(shl_stdout) == EOF && rv == 0) {
+		warningf(true, "%s: write error: %s", builtin_argv0,
+		    strerror(errno));
+		rv = 1;
+	}
 	shl_stdout_ok = 0;
 	builtin_flag = 0;
 	builtin_argv0 = NULL;
