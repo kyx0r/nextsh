@@ -1965,7 +1965,7 @@ settrap(Trap *p, char *s)
 	if ((p->flags & (TF_DFL_INTR|TF_FATAL)) && f == SIG_DFL)
 		f = trapsig;
 	else if (p->flags & TF_SHELL_USES) {
-		if (!(p->flags & TF_ORIG_IGN) || Flag(FTALKING)) {
+		if (!(p->flags & TF_ORIG_IGN) || Flag(FTALKING_I)) {
 			/* do what user wants at exec time */
 			p->flags &= ~(TF_EXEC_IGN|TF_EXEC_DFL);
 			if (f == SIG_IGN)
@@ -2039,7 +2039,7 @@ setsig(Trap *p, sh_sig_t f, int flags)
 	 *	- the shell wants for force a change
 	 */
 	if ((p->flags & TF_ORIG_IGN) && !(flags & SS_FORCE) &&
-	    (!(flags & SS_USER) || !Flag(FTALKING)))
+	    (!(flags & SS_USER) || !Flag(FTALKING_I)))
 		return 0;
 
 	setexecsig(p, flags & SS_RESTORE_MASK);
