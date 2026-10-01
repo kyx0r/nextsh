@@ -2022,6 +2022,7 @@ expand(char *cp,	/* input word */
 	int newlines = 0; /* For trailing newlines in COMSUB */
 	int saw_eq, tilde_ok;
 	int make_magic;
+	int bsquote = 0;	/* \ from an expansion quotes the next char */
 	size_t len;
 
 	if (cp == NULL)
@@ -2539,8 +2540,18 @@ expand(char *cp,	/* input word */
 			 */
 			tilde_ok = (tilde_ok << 1) & 3;
 			/* mark any special second pass chars */
-			if (!quote)
+			if (!quote && !bsquote)
 				switch (c) {
+				case '\\':
+					/* in a pattern, a \ resulting from an
+					 * expansion quotes the next character
+					 */
+					if ((f & DOPAT) && !(f & DOGLOB) &&
+					    type != XBASE && *x.str != '\0') {
+						bsquote = 1;
+						continue;
+					}
+					break;
 				case '[':
 				case '!':
 				case '-':
@@ -2612,8 +2623,10 @@ expand(char *cp,	/* input word */
 					}
 					break;
 				}
-			else
+			else {
 				quote &= ~2; /* undo temporary */
+				bsquote = 0;
+			}
 
 			if (make_magic) {
 				make_magic = 0;
