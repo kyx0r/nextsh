@@ -1919,7 +1919,7 @@ c_alias(char **wp)
 				}
 				shprintf("\n");
 			} else {
-				shprintf("%s alias not found\n", alias);
+				bi_errorf("%s: not found", alias);
 				rv = 1;
 			}
 			continue;
