@@ -2,8 +2,9 @@
 # Nextsh test suite - POSIX shell
 # Tests the lexer, mostly the parts that scan the raw text of a $(..)
 # body: quoting, here documents, comments and case patterns. Also tests
-# vi-mode UTF-8 redraw, window buffers and completion through a PTY
-# (requires script(1)).
+# bad substitutions, arithmetic limits, deep nesting, and vi-mode UTF-8
+# redraw, window buffers and completion through a PTY (requires
+# script(1)).
 #
 # The shell under test is $SH (./sh by default), the shell running this
 # script can be any POSIX shell.
@@ -400,6 +401,150 @@ S
 
 terr 'unterminated case' <<'S'
 echo "$(case x in x) echo hi;;)"
+S
+
+printf '%s\n' '─── Bad substitutions and read-only variables ────────────────────────────────'
+
+# these used to read and write past the end of the word before printing
+# the error; the overflow itself only shows up with SH set to a
+# -fsanitize=address build, which dies before the message is printed
+t 'bad substitution ${x/a/b}' '${x/l/L}: bad substitution' <<'S'
+x=hello
+(echo ${x/l/L}) 2>&1 | sed 's/^[^[]*\[[0-9]*\]: //'
+S
+
+t 'bad substitution ${x:n}' '${x:2}: bad substitution' <<'S'
+x=hello
+(echo ${x:2}) 2>&1 | sed 's/^[^[]*\[[0-9]*\]: //'
+S
+
+t 'bad substitution inside a word' '${x/l/L}: bad substitution' <<'S'
+x=hello
+(echo "a${x/l/L}b$x") 2>&1 | sed 's/^[^[]*\[[0-9]*\]: //'
+S
+
+t 'bad substitution on positional parameters' '${@#a}: bad substitution' <<'S'
+set -- a b
+(echo ${@#a} ${*:1}) 2>&1 | sed 's/^[^[]*\[[0-9]*\]: //'
+S
+
+t 'shell continues after a bad substitution' 'after 1' <<'S'
+x=hello
+(echo ${x/l/L}) 2>/dev/null; echo "after $?"
+S
+
+t 'bad substitution inside $(..)' 'after' <<'S'
+x=$(x=a; echo ${x/a/b}) 2>/dev/null; echo after
+S
+
+t 'read-only variable with a short name' 'x1 y' <<'S'
+readonly a=1
+echo ${a+x}${a:-z} ${b-y}
+S
+
+t 'read-only special variable' 'set' <<'S'
+echo ${PPID+set}
+S
+
+t 'several read-only variables in one word' '1-2' <<'S'
+readonly a=1 bb=2
+echo "${a}-${bb:+$bb}"
+S
+
+printf '%s\n' '─── Arithmetic limits ────────────────────────────────────────────────────────'
+
+# overflow used to be undefined behaviour that happened to give these
+# results on common hardware; run with SH set to a -fsanitize=undefined
+# build and UBSAN_OPTIONS=halt_on_error=1 to catch regressions
+
+t 'x++ and x-- keep 64 bits' '4294967296 4294967297 4294967297 4294967296' <<'S'
+x=4294967296
+echo $((x++)) $x $((x--)) $x
+S
+
+t 'addition and subtraction wrap' '-9223372036854775808 9223372036854775807' <<'S'
+echo $((9223372036854775807 + 1)) $((-9223372036854775807 - 2))
+S
+
+t 'multiplication wraps' '-2 0' <<'S'
+echo $((9223372036854775807 * 2)) $(((1 << 62) * 4))
+S
+
+t 'increment wraps' '-9223372036854775808 -9223372036854775807' <<'S'
+x=9223372036854775807
+echo $((x += 1)) $((++x))
+S
+
+t 'negating INT64_MIN' '-9223372036854775808 -9223372036854775808' <<'S'
+echo $((-9223372036854775807 - 1)) $((-(-9223372036854775807 - 1)))
+S
+
+t 'INT64_MIN divided by -1' '-9223372036854775808 0' <<'S'
+echo $(((-9223372036854775807 - 1) / -1)) $(((-9223372036854775807 - 1) % -1))
+S
+
+t 'INT64_MIN in a variable and in base 2' '-9223372036854775808 -2#1000000000000000000000000000000000000000000000000000000000000000' <<'S'
+x=-9223372036854775808
+typeset -i2 b=x
+echo $((x)) $b
+S
+
+t 'shift counts are taken modulo 64' '1 -9223372036854775808 -4 2' <<'S'
+echo $((1 << 64)) $((1 << -1)) $((-8 >> 1)) $((4 >> 65))
+S
+
+t 'literals too large for 64 bits wrap' '7766279631452241919 -1' <<'S'
+echo $((99999999999999999999)) $((16#ffffffffffffffffff))
+S
+
+terr 'base out of range' <<'S'
+echo $((99#1))
+S
+
+printf '%s\n' '─── Deep nesting ─────────────────────────────────────────────────────────────'
+
+# these used to overflow the stack and crash
+t 'runaway function recursion' 'after' <<'S'
+f() { f; }
+f 2>/dev/null; echo after
+S
+
+t 'runaway recursion through eval' 'after' <<'S'
+f() { eval f; }
+f 2>/dev/null; echo after
+S
+
+t 'deeply nested subshells' 'after 1' <<'S'
+o=$(printf '%200000s' | tr ' ' '(')
+c=$(printf '%200000s' | tr ' ' ')')
+(eval "$o:$c") 2>/dev/null; echo "after $?"
+S
+
+t 'deeply nested groups' 'after 1' <<'S'
+o=$(printf '%200000s' | sed 's/ /{ /g')
+c=$(printf '%200000s' | sed 's/ /;}/g')
+(eval "$o:$c") 2>/dev/null; echo "after $?"
+S
+
+t 'deeply nested arithmetic' 'after 1' <<'S'
+o=$(printf '%20000s' | tr ' ' '(')
+c=$(printf '%20000s' | tr ' ' ')')
+(eval "echo \$(($o 1 $c))") 2>/dev/null; echo "after $?"
+S
+
+t 'deeply nested test negation' 'after 1' <<'S'
+(test $(printf '%300000s' | sed 's/ /! /g') x) 2>/dev/null; echo "after $?"
+S
+
+t 'deeply nested [[ ]]' 'after 1' <<'S'
+o=$(printf '%100000s' | sed 's/ /( /g')
+c=$(printf '%100000s' | sed 's/ / )/g')
+(eval "[[ $o x $c ]]") 2>/dev/null; echo "after $?"
+S
+
+t 'nesting within the limit still works' '1000 3' <<'S'
+f() { [ $1 -lt 1000 ] && f $(($1 + 1)) || echo $1; }
+echo $(f 0) $(( ((((((((1)))))))) + ((((((((2)))))))) ))
 S
 
 printf '%s\n' '─── Interactive editing and completion ───────────────────────────────────────'
