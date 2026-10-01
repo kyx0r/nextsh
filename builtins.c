@@ -1823,6 +1823,24 @@ c_typeset(char **wp)
 	return 0;
 }
 
+/* hash: alias -t, a builtin rather than an alias, so that, say, a
+ * function can override it
+ */
+int
+c_hash(char **wp)
+{
+	char **nwp;
+	int n;
+
+	for (n = 0; wp[n] != NULL; n++)
+		;
+	nwp = areallocarray(NULL, n + 2, sizeof(char *), ATEMP);
+	nwp[0] = wp[0];
+	nwp[1] = "-t";
+	memcpy(nwp + 2, wp + 1, n * sizeof(char *));
+	return c_alias(nwp);
+}
+
 int
 c_alias(char **wp)
 {
@@ -2382,6 +2400,7 @@ const struct builtin kshbuiltins [] = {
 	{"*=export", c_typeset},
 	{"+fc", c_fc},
 	{"+getopts", c_getopts},
+	{"+hash", c_hash},
 	{"+jobs", c_jobs},
 	{"+kill", c_kill},
 	{"let", c_let},

@@ -1254,6 +1254,7 @@ int	c_command(char **);
 int	c_type(char **);
 int	c_typeset(char **);
 int	c_alias(char **);
+int	c_hash(char **);
 int	c_unalias(char **);
 int	c_let(char **);
 int	c_jobs(char **);

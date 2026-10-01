@@ -109,7 +109,6 @@ static const char *initcoms [] = {
 	"eval", "typeset -i RANDOM MAILCHECK=\"${MAILCHECK-600}\" SECONDS=\"${SECONDS-0}\" TMOUT=\"${TMOUT-0}\"", NULL,
 	"alias",
 	 /* Standard ksh aliases */
-	  "hash=alias -t",	/* not "alias -t --": hash -r needs to work */
 	  "stop=kill -STOP",
 	  "autoload=typeset -fu",
 	  "functions=typeset -f",
