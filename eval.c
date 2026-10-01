@@ -2103,7 +2103,11 @@ expand(char *cp,	/* input word */
 					char *str, *end;
 
 					sp = varname - 2; /* restore sp */
-					end = (char *) wdscan(sp, CSUBST);
+					/* scan from the word part: starting at
+					 * OSUBST would count it as nesting and
+					 * run past the end of the word */
+					end = (char *) wdscan(strchr(varname,
+					    '\0') + 1, CSUBST);
 					/* ({) the } or x is already skipped */
 					endc = *end;
 					*end = EOS;
