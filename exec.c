@@ -108,12 +108,11 @@ execute(struct op *volatile t,
 		for (iowp = t->ioact; *iowp != NULL; iowp++) {
 			if (iosetup(*iowp, tp) < 0) {
 				exstat = rv = 1;
-				/* Except in the permanent case (exec 2>afile),
-				 * redirection failures for special commands
-				 * cause (non-interactive) shell to exit.
+				/* Redirection failures for special commands,
+				 * exec too, cause (non-interactive) shell to
+				 * exit.
 				 */
-				if (tp && tp->val.f != c_exec &&
-				    tp->type == CSHELL &&
+				if (tp && tp->type == CSHELL &&
 				    (tp->flag & SPEC_BI))
 					errorf(NULL);
 				/* Deal with FERREXIT, quitenv(), etc. */
