@@ -1818,6 +1818,10 @@ intvar(Expr_state *es, struct tbl *vp)
 	    (vp->flag & (ISSET|INTEGER|EXPRLVALUE)) == (ISSET|INTEGER))
 		return vp;
 
+	/* set -u: using an unset variable is an error here too */
+	if (Flag(FNOUNSET) && vp->name[0] != '\0' && !(vp->flag & ISSET))
+		errorf("%s: parameter not set", vp->name);
+
 	vq = tempvar();
 	if (setint_v(vq, vp, es->arith) == NULL) {
 		if (vp->flag & EXPRINEVAL)
