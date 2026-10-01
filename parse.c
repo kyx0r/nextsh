@@ -952,6 +952,8 @@ Done:
 				    YYERRCODE;
 			else if (c == '|' && c2 == '&')
 				c = COPROC;
+			else if (c == ';' && c2 == '&')
+				c = CASEFT;
 			else
 				ungetsc(c2);
 			return c;
@@ -2464,8 +2466,11 @@ casepart(int endtok)
 	musthave(')', 0);
 
 	t->left = c_list(true);
-	/* Note: Posix requires the ;; */
-	if ((tpeek(CONTIN|KEYWORD|ALIAS)) != endtok)
+	/* Note: Posix requires the ;; or ;& */
+	if ((c = tpeek(CONTIN|KEYWORD|ALIAS)) == CASEFT) {
+		t->u.fallthru = 1;
+		token(CONTIN|KEYWORD|ALIAS);
+	} else if (c != endtok)
 		musthave(BREAK, CONTIN|KEYWORD|ALIAS);
 	return (t);
 }
@@ -2597,6 +2602,7 @@ const	struct tokeninfo {
 	{ "&&",		LOGAND,	false },
 	{ "||",		LOGOR,	false },
 	{ ";;",		BREAK,	false },
+	{ ";&",		CASEFT,	false },
 	{ "((",		MDPAREN, false },
 	{ "|&",		COPROC,	false },
 	/* and some special cases... */
@@ -2951,7 +2957,8 @@ ptree(struct op *t, int indent, struct shf *shf)
 			for (w = t1->vars; *w != NULL; w++)
 				fptreef(shf, indent, "%S%c", *w,
 				    (w[1] != NULL) ? '|' : ')');
-			fptreef(shf, indent + INDENT, "%;%T%N;;", t1->left);
+			fptreef(shf, indent + INDENT, "%;%T%N;%c", t1->left,
+			    t1->u.fallthru ? '&' : ';');
 		}
 		fptreef(shf, indent, "%Nesac ");
 		break;

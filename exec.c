@@ -350,6 +350,12 @@ execute(struct op *volatile t,
 		break;
 	  Found:
 		rv = execute(t->left, flags & XERROK, xerrok);
+		/* ;& runs the next item's commands too */
+		while (t->u.fallthru && t->right != NULL) {
+			t = t->right;
+			if (t->left != NULL)
+				rv = execute(t->left, flags & XERROK, xerrok);
+		}
 		break;
 
 	case TBRACE:

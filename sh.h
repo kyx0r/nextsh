@@ -865,6 +865,7 @@ struct op {
 	union { /* WARNING: newtp(), tcopy() use evalflags = 0 to clear union */
 		short	evalflags;	/* TCOM: arg expansion eval() flags */
 		short	ksh_func;	/* TFUNC: function x (vs x()) */
+		short	fallthru;	/* TPAT: ended by ;& */
 	} u;
 	char  **args;			/* arguments to a command */
 	char  **vars;			/* variable assignments */
@@ -1194,6 +1195,7 @@ typedef union {
 #define BANG	278		/* ! */
 #define DBRACKET 279		/* [[ .. ]] */
 #define COPROC	280		/* |& */
+#define CASEFT	281		/* ;& */
 #define	YYERRCODE 300
 
 /* flags to yylex */
