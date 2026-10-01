@@ -377,7 +377,11 @@ yylex(int cf)
 					*wp++ = QCHAR, *wp++ = c;
 				break;
 			case '\'':
-				if ((cf & HEREDOC) || state == SBRACEQ) {
+				/* in a here-document, as in "...", ' is itself
+				 * except in the pattern of ${x#'pat'}
+				 */
+				if (((cf & HEREDOC) && state != STBRACE) ||
+				    state == SBRACEQ) {
 					*wp++ = CHAR, *wp++ = c;
 					break;
 				}
