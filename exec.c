@@ -674,8 +674,17 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
 		if (flags&XEXEC) {
 			j_exit();
 			if (!(flags&XBGND) || Flag(FMONITOR)) {
-				setexecsig(&sigtraps[SIGINT], SS_RESTORE_ORIG);
-				setexecsig(&sigtraps[SIGQUIT], SS_RESTORE_ORIG);
+				/* unless changed by trap or ignored in a
+				 * background job
+				 */
+				if (!(sigtraps[SIGINT].flags &
+				    (TF_USER_SET|TF_EXEC_IGN)))
+					setexecsig(&sigtraps[SIGINT],
+					    SS_RESTORE_ORIG);
+				if (!(sigtraps[SIGQUIT].flags &
+				    (TF_USER_SET|TF_EXEC_IGN)))
+					setexecsig(&sigtraps[SIGQUIT],
+					    SS_RESTORE_ORIG);
 			}
 		}
 
