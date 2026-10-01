@@ -723,6 +723,15 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
   Leave:
 	if (flags & XEXEC) {
 		exstat = rv;
+		/* not with the redirections of the command */
+		if (genv->savefd != NULL) {
+			for (i = 0; i < NUFILE; i++)
+				if (genv->savefd[i])
+					restfd(i, genv->savefd[i]);
+			if (genv->savefd[2])
+				shf_reopen(2, SHF_WR, shl_out);
+			genv->savefd = NULL;
+		}
 		unwind(LEXIT);	/* runs the EXIT trap */
 	}
 	return rv;
