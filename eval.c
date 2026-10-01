@@ -2174,9 +2174,12 @@ expand(char *cp,	/* input word */
 					switch (stype & 0x7f) {
 					case '#':
 					case '%':
-						/* ! DOBLANK,DOBRACE_,DOTILDE */
+						/* ! DOBLANK,DOBRACE_; the pattern
+						 * gets tilde expansion
+						 */
 						f = DOPAT | (f&DONTRUNCOMMAND) |
-						    DOTEMP_;
+						    DOTEMP_ | DOTILDE;
+						tilde_ok = 1;
 						quote = 0;
 						/* Prepend open pattern (so |
 						 * in a trim will work as
