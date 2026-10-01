@@ -2220,7 +2220,8 @@ yyparse(void)
 
 	reject = false;
 
-	outtree = c_list(source->type == SSTRING);
+	outtree = c_list(source->type == SSTRING &&
+	    !(source->flags & SF_LINES));
 	c = tpeek(0);
 	if (c == 0 && !outtree)
 		outtree = newtp(TEOF);

@@ -332,6 +332,10 @@ main(int argc, char *argv[])
 
 	if (Flag(FCOMMAND)) {
 		s = pushs(SSTRING, ATEMP);
+		/* like a file, a line at a time, so that an alias
+		 * defined on one line applies on the next
+		 */
+		s->flags |= SF_LINES;
 		if (!(s->start = s->str = argv[argi++]))
 			errorf("-c requires an argument");
 		if (argv[argi])

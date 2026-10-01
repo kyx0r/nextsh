@@ -1163,6 +1163,7 @@ struct source {
 #define SF_ALIAS	BIT(1)	/* faking space at end of alias */
 #define SF_ALIASEND	BIT(2)	/* faking space at end of alias */
 #define SF_TTY		BIT(3)	/* type == SSTDIN & it is a tty */
+#define SF_LINES	BIT(4)	/* SSTRING parsed a line at a time (-c) */
 
 typedef union {
 	int	i;
