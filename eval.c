@@ -1865,6 +1865,7 @@ typedef struct Expand {
 	} u;			/* source */
 	struct tbl *var;	/* variable in ${var..} */
 	short	split;		/* split "$@" / call waitlast $() */
+	char	vec;		/* ${@#..}, ${*%..}: '@' or '*' */
 } Expand;
 
 #define	XBASE		0	/* scanning original */
@@ -1980,6 +1981,8 @@ typedef struct SubType {
 	short	f;		/* saved value of f (DOPAT, etc) */
 	struct tbl *var;	/* variable for ${var..} */
 	short	quote;		/* saved value of quote (for ${..[%#]..}) */
+	char	vec;		/* trimming each of $@ or $*: '@' or '*' */
+	short	word;		/* field splitting state before ${@#..} */
 	struct SubType *prev;	/* old type */
 	struct SubType *next;	/* poped type (to avoid re-allocating) */
 } SubType;
@@ -2150,7 +2153,9 @@ expand(char *cp,	/* input word */
 				if (f&DOBLANK)
 					doblank++;
 				tilde_ok = 0;
-				if (word == IFS_QUOTE && type != XNULLSUB)
+				/* "${@#x}" may yet be no word at all */
+				if (word == IFS_QUOTE && type != XNULLSUB &&
+				    x.vec != '@')
 					word = IFS_WORD;
 				if (type == XBASE) {	/* expand? */
 					if (!st->next) {
@@ -2167,6 +2172,8 @@ expand(char *cp,	/* input word */
 					st->base = Xsavepos(ds, dp);
 					st->f = f;
 					st->var = varcpy(x.var);
+					st->vec = x.vec;
+					st->word = word;
 					st->quote = quote;
 					/* skip qualifier(s) */
 					if (stype)
@@ -2244,6 +2251,41 @@ expand(char *cp,	/* input word */
 					/* Append end-pattern */
 					*dp++ = MAGIC; *dp++ = ')'; *dp = '\0';
 					dp = Xrestpos(ds, dp, st->base);
+					if (st->vec) {
+						/* trim each of $@ or $*,
+						 * then expand them like
+						 * $@ or $* would be
+						 */
+						char **av = genv->loc->argv;
+
+						word = st->word;
+						int n = genv->loc->argc, i;
+						const char **v = areallocarray(
+						    NULL, n + 1, sizeof(char *),
+						    ATEMP);
+
+						for (i = 0; i < n; i++)
+							v[i] = trimsub(str_save(
+							    av[i + 1], ATEMP), dp,
+							    st->stype);
+						v[n] = NULL;
+						x.split = st->vec == '@';
+						if (n == 0) {
+							x.str = null;
+							type = x.split ?
+							    XNULLSUB : XSUB;
+						} else {
+							x.u.strv = v + 1;
+							x.str = v[0];
+							type = XARG;
+							if (word == IFS_QUOTE)
+								word = IFS_WORD;
+						}
+						if (f&DOBLANK)
+							doblank++;
+						st = st->prev;
+						continue;
+					}
 					/* Must use st->var since calling
 					 * global would break things
 					 * like x[i+=1].
@@ -2600,6 +2642,7 @@ varsub(Expand *xp, char *sp, char *word,
 		return -1;
 
 	xp->var = NULL;
+	xp->vec = 0;
 
 	/* ${#var}, string length or array size */
 	if (sp[0] == '#' && (c = sp[1]) != '\0') {
@@ -2661,9 +2704,16 @@ varsub(Expand *xp, char *sp, char *word,
 	if (c == '*' || c == '@') {
 		switch (stype & 0x7f) {
 		case '=':	/* can't assign to a vector */
-		case '%':	/* can't trim a vector (yet) */
-		case '#':
 			return -1;
+		case '%':	/* each one is trimmed, see expand() */
+		case '#':
+			if (stype & 0x80 && word[0] == CHAR &&
+			    word[1] == ':')
+				return -1;	/* no ${@:#x} */
+			xp->vec = c;
+			*stypep = stype;
+			*slenp = slen;
+			return XBASE;
 		}
 		if (genv->loc->argc == 0) {
 			xp->str = null;

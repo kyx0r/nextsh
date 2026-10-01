@@ -492,9 +492,19 @@ x=hello
 (echo "a${x/l/L}b$x") 2>&1 | sed 's/^[^[]*\[[0-9]*\]: //'
 S
 
-t 'bad substitution on positional parameters' '${@#a}: bad substitution' <<'S'
+t 'bad substitution on positional parameters' '${*:1}: bad substitution' <<'S'
 set -- a b
-(echo ${@#a} ${*:1}) 2>&1 | sed 's/^[^[]*\[[0-9]*\]: //'
+(echo ${*:1}) 2>&1 | sed 's/^[^[]*\[[0-9]*\]: //'
+S
+
+t 'trimming each positional parameter' '[]|[b]|[xa]|[ab]|[x]|0|[a b]' <<'S'
+set -- a ab xa
+printf '[%s]|' "${@#a}" ${@%a}
+set --
+set -- "${@#a}"
+printf '%s|' $#
+set -- 'a a' 'b'
+echo "[${*#a }]"
 S
 
 t 'shell continues after a bad substitution' 'after 1' <<'S'
