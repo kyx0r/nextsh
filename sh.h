@@ -308,10 +308,12 @@ extern	struct env	*genv;
 #define EF_FUNC_PARSE	BIT(0)	/* function being parsed */
 #define EF_BRKCONT_PASS	BIT(1)	/* set if E_LOOP must pass break/continue on */
 #define EF_FAKE_SIGDIE	BIT(2)	/* hack to get info from unwind to quitenv */
+#define EF_EVAL		BIT(3)	/* E_PARSE of eval: pass break/continue on */
 
 /* Do breaks/continues stop at env type e? */
-#define STOP_BRKCONT(t)	((t) == E_NONE || (t) == E_PARSE \
-			 || (t) == E_FUNC || (t) == E_INCL)
+#define STOP_BRKCONT(ep)	((ep)->type == E_NONE || (ep)->type == E_FUNC \
+			 || (ep)->type == E_INCL || \
+			 ((ep)->type == E_PARSE && !((ep)->flags & EF_EVAL)))
 /* Do returns stop at env type e? */
 #define STOP_RETURN(t)	((t) == E_FUNC || (t) == E_INCL)
 

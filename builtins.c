@@ -607,8 +607,8 @@ c_brkcont(char **wp)
 		return 1;
 	}
 
-	/* Stop at E_NONE, E_PARSE, E_FUNC, or E_INCL */
-	for (ep = genv; ep && !STOP_BRKCONT(ep->type); ep = ep->oenv)
+	/* Stop at E_NONE, E_PARSE (but not that of eval), E_FUNC or E_INCL */
+	for (ep = genv; ep && !STOP_BRKCONT(ep); ep = ep->oenv)
 		if (ep->type == E_LOOP) {
 			if (--quit == 0)
 				break;

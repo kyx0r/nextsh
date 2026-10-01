@@ -557,6 +557,9 @@ shell(Source *volatile s, volatile int toplevel)
 	shell_xerrok = 0;
 
 	newenv(E_PARSE);
+	/* break and continue in eval apply to the loops around it */
+	if (s->type == SWORDS)
+		genv->flags |= EF_EVAL;
 	if (interactive)
 		really_exit = 0;
 	i = sigsetjmp(genv->jbuf, 0);
@@ -589,6 +592,8 @@ shell(Source *volatile s, volatile int toplevel)
 		case LEXIT:
 		case LLEAVE:
 		case LRETURN:
+		case LBREAK:
+		case LCONTIN:
 			source = old_source;
 			quitenv(NULL);
 			unwind(i);	/* keep on going */
