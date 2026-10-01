@@ -47,7 +47,13 @@ pid_t	kshpid;
 pid_t	procpid;
 uid_t	ksheuid;
 int	exstat;
+int	trap_exstat = -1;
+int	trap_infunc;
+int	builtin_xerrok;
+int	shell_xerrok;
+int	traps_inherited;
 int	subst_exstat;
+int	subst_done;
 const char *safe_prompt;
 int	disable_subst;
 
@@ -103,7 +109,6 @@ static const char *initcoms [] = {
 	"eval", "typeset -i RANDOM MAILCHECK=\"${MAILCHECK-600}\" SECONDS=\"${SECONDS-0}\" TMOUT=\"${TMOUT-0}\"", NULL,
 	"alias",
 	 /* Standard ksh aliases */
-	  "hash=alias -t",	/* not "alias -t --": hash -r needs to work */
 	  "stop=kill -STOP",
 	  "autoload=typeset -fu",
 	  "functions=typeset -f",
@@ -326,6 +331,10 @@ main(int argc, char *argv[])
 
 	if (Flag(FCOMMAND)) {
 		s = pushs(SSTRING, ATEMP);
+		/* like a file, a line at a time, so that an alias
+		 * defined on one line applies on the next
+		 */
+		s->flags |= SF_LINES;
 		if (!(s->start = s->str = argv[argi++]))
 			errorf("-c requires an argument");
 		if (argv[argi])
@@ -335,8 +344,11 @@ main(int argc, char *argv[])
 		s->file = argv[argi++];
 		s->u.shf = shf_open(s->file, O_RDONLY, 0, SHF_MAPHI|SHF_CLEXEC);
 		if (s->u.shf == NULL) {
-			exstat = 127; /* POSIX */
-			errorf("%s: %s", s->file, strerror(errno));
+			/* POSIX: 127 if not found, else 126 */
+			int e = errno;
+
+			warningf(true, "%s: %s", s->file, strerror(e));
+			exit(e == ENOENT || e == ENOTDIR ? 127 : 126);
 		}
 		kshname = s->file;
 	} else {
@@ -396,13 +408,21 @@ main(int argc, char *argv[])
 	if (Flag(FPRIVILEGED))
 		include("/etc/suid_profile", 0, NULL, 1);
 	else if (Flag(FTALKING)) {
-		char *env_file;
+		char *volatile env_file = null;
 
-		/* include $ENV */
-		env_file = str_val(global("ENV"));
-		env_file = substitute(env_file, DOTILDE);
-		if (*env_file != '\0')
-			include(env_file, 0, NULL, 1);
+		/* include $ENV; an error expanding it (${x?msg}) is
+		 * reported but is no reason to exit
+		 */
+		newenv(E_ERRH);
+		if (!sigsetjmp(genv->jbuf, 0))
+			env_file = str_save(substitute(str_val(global("ENV")),
+			    DOTILDE), APERM);
+		quitenv(NULL);
+		if (env_file != null) {
+			if (*env_file != '\0')
+				include(env_file, 0, NULL, 1);
+			afree(env_file, APERM);
+		}
 	}
 
 	if (restricted) {
@@ -533,13 +553,30 @@ shell(Source *volatile s, volatile int toplevel)
 	volatile int attempts = 13;
 	volatile int interactive = Flag(FTALKING) && toplevel;
 	Source *volatile old_source = source;
+	volatile int ran = 0;
+	/* eval and . in an if condition, etc. */
+	volatile int xflags = shell_xerrok ? XERROK : 0;
+	/* command eval: a syntax error is an ordinary failure */
+	volatile int regular_eval = s->type == SWORDS &&
+	    !(builtin_flag & SPEC_BI);
+	volatile int parsing = 0;
 	int i;
 
+	shell_xerrok = 0;
+
 	newenv(E_PARSE);
+	/* break and continue in eval apply to the loops around it */
+	if (s->type == SWORDS)
+		genv->flags |= EF_EVAL;
 	if (interactive)
 		really_exit = 0;
 	i = sigsetjmp(genv->jbuf, 0);
 	if (i) {
+		if (i == LERROR && parsing && regular_eval) {
+			source = old_source;
+			quitenv(NULL);
+			return exstat = 2;
+		}
 		switch (i) {
 		case LINTR: /* we get here if SIGINT not caught or ignored */
 		case LERROR:
@@ -568,6 +605,8 @@ shell(Source *volatile s, volatile int toplevel)
 		case LEXIT:
 		case LLEAVE:
 		case LRETURN:
+		case LBREAK:
+		case LCONTIN:
 			source = old_source;
 			quitenv(NULL);
 			unwind(i);	/* keep on going */
@@ -598,7 +637,9 @@ shell(Source *volatile s, volatile int toplevel)
 			set_prompt(PS1);
 		}
 
+		parsing = 1;
 		t = compile(s);
+		parsing = 0;
 		if (t != NULL && t->type == TEOF) {
 			if (wastty && Flag(FIGNOREEOF) && --attempts > 0) {
 				shellf("Use `exit' to leave ksh\n");
@@ -619,8 +660,10 @@ shell(Source *volatile s, volatile int toplevel)
 			}
 		}
 
-		if (t && (!Flag(FNOEXEC) || (s->flags & SF_TTY)))
-			exstat = execute(t, 0, NULL);
+		if (t && (!Flag(FNOEXEC) || (s->flags & SF_TTY))) {
+			ran = 1;
+			exstat = execute(t, xflags, NULL);
+		}
 
 		if (t != NULL && t->type != TEOF && interactive && really_exit)
 			really_exit = 0;
@@ -629,6 +672,9 @@ shell(Source *volatile s, volatile int toplevel)
 	}
 	quitenv(NULL);
 	source = old_source;
+	/* an empty dot script or eval string returns 0 */
+	if (!ran && !toplevel)
+		exstat = 0;
 	return exstat;
 }
 
@@ -665,6 +711,12 @@ unwind(int i)
 			/* FALLTHROUGH */
 
 		default:
+			/* exiting on an error: the EXIT trap still runs */
+			if (genv->oenv == NULL && i == LERROR &&
+			    sigtraps[SIGEXIT_].trap) {
+				i = LLEAVE;
+				runtrap(&sigtraps[SIGEXIT_]);
+			}
 			quitenv(NULL);
 			/*
 			 * quitenv() may have reclaimed the memory

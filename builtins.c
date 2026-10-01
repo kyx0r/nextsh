@@ -28,7 +28,6 @@ c_shift(char **wp)
 {
 	struct block *l = genv->loc;
 	int n;
-	int64_t val;
 	char *arg;
 
 	if (ksh_getopt(wp, &builtin_opt, null) == '?')
@@ -36,8 +35,10 @@ c_shift(char **wp)
 	arg = wp[builtin_opt.optind];
 
 	if (arg) {
-		evaluate(arg, &val, KSH_UNWIND_ERROR, false);
-		n = val;
+		if (!getn(arg, &n)) {
+			bi_errorf("%s: bad number", arg);
+			return (1);
+		}
 	} else
 		n = 1;
 	if (n < 0) {
@@ -193,8 +194,10 @@ c_dot(char **wp)
 	if (ksh_getopt(wp, &builtin_opt, null) == '?')
 		return 1;
 
-	if ((cp = wp[builtin_opt.optind]) == NULL)
-		return 0;
+	if ((cp = wp[builtin_opt.optind]) == NULL) {
+		bi_errorf("missing argument");
+		return 1;
+	}
 	file = search(cp, search_path, R_OK, &err);
 	if (file == NULL) {
 		bi_errorf("%s: %s", cp, err ? strerror(err) : "not found");
@@ -211,7 +214,9 @@ c_dot(char **wp)
 		argc = 0;
 		argv = NULL;
 	}
+	shell_xerrok = builtin_xerrok;
 	i = include(file, argc, argv, 0);
+	shell_xerrok = 0;
 	if (i < 0) { /* should not happen */
 		bi_errorf("%s: %s", cp, strerror(errno));
 		return 1;
@@ -257,9 +262,17 @@ c_read(char **wp)
 	XString cs, xs = { NULL, NULL, 0, NULL };
 	struct tbl *vp;
 	char *xp = NULL;
+	XString qs;
+	char *qp, *line, *quoted, *val;
+	int i, j, k, len, start, end;
+	int delim = '\n';
 
-	while ((optc = ksh_getopt(wp, &builtin_opt, "prsu,")) != -1)
+	while ((optc = ksh_getopt(wp, &builtin_opt, "d:prsu,")) != -1)
 		switch (optc) {
+		case 'd':
+			/* -d '' is NUL */
+			delim = (unsigned char) builtin_opt.optarg[0];
+			break;
 		case 'p':
 			if ((fd = coproc_getfd(R_OK, &emsg)) < 0) {
 				bi_errorf("-p: %s", emsg);
@@ -287,6 +300,11 @@ c_read(char **wp)
 
 	if (*wp == NULL)
 		*--wp = "REPLY";
+
+	if (fcntl(fd, F_GETFL) == -1) {
+		bi_errorf("%d: %s", fd, strerror(errno));
+		return 2;
+	}
 
 	/* Since we can't necessarily seek backwards on non-regular files,
 	 * don't buffer them so we can't read too much.
@@ -318,72 +336,109 @@ c_read(char **wp)
 
 	if (savehist)
 		Xinit(xs, xp, 128, ATEMP);
+	/* Read the line; qs marks the characters that were escaped,
+	 * which are never field separators.
+	 */
 	expanding = 0;
 	Xinit(cs, cp, 128, ATEMP);
-	for (; *wp != NULL; wp++) {
-		for (cp = Xstring(cs, cp); ; ) {
-			if (c == '\n' || c == EOF)
-				break;
-			while (1) {
-				c = shf_getc(shf);
-				if (c == '\0')
-					continue;
-				if (c == EOF && shf_error(shf) &&
-				    shf->errno_ == EINTR) {
-					/* Was the offending signal one that
-					 * would normally kill a process?
-					 * If so, pretend the read was killed.
-					 */
-					ecode = fatal_trap_check();
+	Xinit(qs, qp, 128, ATEMP);
+	for (;;) {
+		c = shf_getc(shf);
+		if (c == '\0' && delim != '\0')
+			continue;
+		if (c == EOF && shf_error(shf) && shf->errno_ == EINTR) {
+			/* Was the offending signal one that would normally
+			 * kill a process?  If so, pretend the read was
+			 * killed.
+			 */
+			ecode = fatal_trap_check();
 
-					/* non fatal (eg, CHLD), carry on */
-					if (!ecode) {
-						shf_clearerr(shf);
-						continue;
-					}
-				}
-				break;
-			}
-			if (savehist) {
-				Xcheck(xs, xp);
-				Xput(xs, xp, c);
-			}
-			Xcheck(cs, cp);
-			if (expanding) {
-				expanding = 0;
-				if (c == '\n') {
-					c = 0;
-					if (Flag(FTALKING_I) && isatty(fd)) {
-						/* set prompt in case this is
-						 * called from .profile or $ENV
-						 */
-						set_prompt(PS2);
-						pprompt(prompt, 0);
-					}
-				} else if (c != EOF)
-					Xput(cs, cp, c);
+			/* non fatal (eg, CHLD), carry on */
+			if (!ecode) {
+				shf_clearerr(shf);
 				continue;
 			}
-			if (expand && c == '\\') {
-				expanding = 1;
-				continue;
-			}
-			if (c == '\n' || c == EOF)
-				break;
-			if (ctype(c, C_IFS)) {
-				if (Xlength(cs, cp) == 0 && ctype(c, C_IFSWS))
-					continue;
-				if (wp[1])
-					break;
-			}
-			Xput(cs, cp, c);
 		}
-		/* strip trailing IFS white space from last variable */
-		if (!wp[1])
-			while (Xlength(cs, cp) && ctype(cp[-1], C_IFS) &&
-			    ctype(cp[-1], C_IFSWS))
-				cp--;
-		Xput(cs, cp, '\0');
+		if (savehist) {
+			Xcheck(xs, xp);
+			Xput(xs, xp, c);
+		}
+		if (expanding) {
+			expanding = 0;
+			if (c == '\n') {
+				if (Flag(FTALKING_I) && isatty(fd)) {
+					/* set prompt in case this is
+					 * called from .profile or $ENV
+					 */
+					set_prompt(PS2);
+					pprompt(prompt, 0);
+				}
+			} else if (c != EOF) {
+				Xcheck(cs, cp);
+				Xput(cs, cp, c);
+				Xcheck(qs, qp);
+				Xput(qs, qp, 1);
+			}
+			if (c != EOF)
+				continue;
+		}
+		if (c == delim || c == EOF)
+			break;
+		if (expand && c == '\\') {
+			expanding = 1;
+			continue;
+		}
+		Xcheck(cs, cp);
+		Xput(cs, cp, c);
+		Xcheck(qs, qp);
+		Xput(qs, qp, 0);
+	}
+	len = Xlength(cs, cp);
+	line = Xstring(cs, cp);
+	quoted = Xstring(qs, qp);
+
+	/* Split it like field splitting does, the last variable gets
+	 * the rest of the line.
+	 */
+#define RD_IFS(k)	(!quoted[k] && ctype(line[k], C_IFS))
+#define RD_IFSWS(k)	(RD_IFS(k) && ctype(line[k], C_IFSWS))
+	i = 0;
+	for (; *wp != NULL; wp++) {
+		while (i < len && RD_IFSWS(i))
+			i++;
+		start = i;
+		if (wp[1]) {
+			while (i < len && !RD_IFS(i))
+				i++;
+			end = i;
+			/* the separator: IFS white space around at most
+			 * one other IFS character
+			 */
+			while (i < len && RD_IFSWS(i))
+				i++;
+			if (i < len && RD_IFS(i))
+				i++;
+		} else {
+			end = len;
+			while (end > start && RD_IFSWS(end - 1))
+				end--;
+			/* a single field followed by one separator
+			 * loses that separator
+			 */
+			for (k = start; k < end && !RD_IFS(k); k++)
+				;
+			if (k < end) {
+				j = k;
+				while (j < end && RD_IFSWS(j))
+					j++;
+				if (j < end && RD_IFS(j))
+					j++;
+				if (j == end)
+					end = k;
+			}
+			i = len;
+		}
+		val = str_nsave(line + start, end - start, ATEMP);
 		vp = global(*wp);
 		/* Must be done before setting export. */
 		if (vp->flag & RDONLY) {
@@ -393,11 +448,16 @@ c_read(char **wp)
 		}
 		if (Flag(FEXPORT))
 			typeset(*wp, EXPORT, 0, 0, 0);
-		if (!setstr(vp, Xstring(cs, cp), KSH_RETURN_ERROR)) {
-		    shf_flush(shf);
-		    return 1;
+		if (!setstr(vp, val, KSH_RETURN_ERROR)) {
+			shf_flush(shf);
+			return 1;
 		}
+		afree(val, ATEMP);
 	}
+#undef RD_IFS
+#undef RD_IFSWS
+	Xfree(cs, cp);
+	Xfree(qs, qp);
 
 	shf_flush(shf);
 	if (savehist) {
@@ -421,71 +481,82 @@ c_eval(char **wp)
 {
 	struct source *s;
 	struct source *saves = source;
-	int savef;
 	int rv;
 
 	if (ksh_getopt(wp, &builtin_opt, null) == '?')
 		return 1;
 	s = pushs(SWORDS, ATEMP);
 	s->u.strv = wp + builtin_opt.optind;
-	if (!Flag(FPOSIX)) {
-		/*
-		 * Handle case where the command is empty due to failed
-		 * command substitution, eg, eval "$(false)".
-		 * In this case, shell() will not set/change exstat (because
-		 * compiled tree is empty), so will use this value.
-		 * subst_exstat is cleared in execute(), so should be 0 if
-		 * there were no substitutions.
-		 *
-		 * A strict reading of POSIX says we don't do this (though
-		 * it is traditionally done). [from 1003.2-1992]
-		 *    3.9.1: Simple Commands
-		 *	... If there is a command name, execution shall
-		 *	continue as described in 3.9.1.1.  If there
-		 *	is no command name, but the command contained a command
-		 *	substitution, the command shall complete with the exit
-		 *	status of the last command substitution
-		 *    3.9.1.1: Command Search and Execution
-		 *	...(1)...(a) If the command name matches the name of
-		 *	a special built-in utility, that special built-in
-		 *	utility shall be invoked.
-		 * 3.14.5: Eval
-		 *	... If there are no arguments, or only null arguments,
-		 *	eval shall return an exit status of zero.
-		 */
-		exstat = subst_exstat;
-	}
 
-	savef = Flag(FERREXIT);
-	Flag(FERREXIT) = 0;
+	/* $? in eval "echo \$?" $(false) is that of the $(false) */
+	if (subst_done)
+		exstat = subst_exstat;
+	shell_xerrok = builtin_xerrok;
 	rv = shell(s, false);
-	Flag(FERREXIT) = savef;
 	source = saves;
 	afree(s, ATEMP);
 	return (rv);
 }
 
+/* print the trap command that sets the trap of p; if all, also when it
+ * has the default action
+ */
+static void
+trap_print(Trap *p, int all)
+{
+	char *s = p->trap;
+
+	if (s == NULL && traps_inherited)
+		s = p->otrap;
+	if (s == NULL && !all)
+		return;
+	shprintf("trap -- ");
+	if (s == NULL)
+		shprintf("-");
+	else
+		print_value_quoted(s);
+	shprintf(" %s\n", p->name);
+}
+
 int
 c_trap(char **wp)
 {
-	int i;
+	int i, rv = 0, pflag = 0, optc;
 	char *s;
 	Trap *p;
 
-	if (ksh_getopt(wp, &builtin_opt, null) == '?')
-		return 1;
+	while ((optc = ksh_getopt(wp, &builtin_opt, "p")) != -1)
+		switch (optc) {
+		case 'p':
+			pflag = 1;
+			break;
+		case '?':
+			return 1;
+		}
 	wp += builtin_opt.optind;
 
-	if (*wp == NULL) {
+	if (*wp == NULL || pflag) {
+		/* -p: also the conditions with the default action, as
+		 * "trap -- - NAME", and only those named if any are
+		 */
 		for (p = sigtraps, i = NSIG+1; --i >= 0; p++) {
-			if (p->trap != NULL) {
-				shprintf("trap -- ");
-				print_value_quoted(p->trap);
-				shprintf(" %s\n", p->name);
-			}
+			if (pflag && *wp != NULL)
+				break;
+			if (p->name == NULL ||
+			    (pflag && p->signal == SIGERR_))
+				continue;
+			trap_print(p, pflag);
 		}
-		return 0;
+		for (; *wp != NULL; wp++) {
+			if ((p = gettrap(*wp, true)) == NULL) {
+				warningf(true, "trap: bad signal %s", *wp);
+				rv = 1;
+			} else
+				trap_print(p, 1);
+		}
+		return rv;
 	}
+	traps_inherited = 0;
 
 	/*
 	 * Use case sensitive lookup for first arg so the
@@ -500,12 +571,14 @@ c_trap(char **wp)
 	while (*wp != NULL) {
 		p = gettrap(*wp++, true);
 		if (p == NULL) {
-			bi_errorf("bad signal %s", wp[-1]);
-			return 1;
+			/* POSIX: not an error that exits the shell */
+			warningf(true, "trap: bad signal %s", wp[-1]);
+			rv = 1;
+			continue;
 		}
 		settrap(p, s);
 	}
-	return 0;
+	return rv;
 }
 
 int
@@ -525,7 +598,10 @@ c_exitreturn(char **wp)
 			warningf(true, "%s: bad number", arg);
 		} else
 			exstat = n;
-	}
+	} else if (trap_exstat >= 0 && (wp[0][0] != 'r' || !trap_infunc))
+		/* in a trap action: the $? from before it */
+		exstat = trap_exstat;
+	trap_exstat = -1;
 	if (wp[0][0] == 'r') { /* return */
 		struct env *ep;
 
@@ -572,8 +648,8 @@ c_brkcont(char **wp)
 		return 1;
 	}
 
-	/* Stop at E_NONE, E_PARSE, E_FUNC, or E_INCL */
-	for (ep = genv; ep && !STOP_BRKCONT(ep->type); ep = ep->oenv)
+	/* Stop at E_NONE, E_PARSE (but not that of eval), E_FUNC or E_INCL */
+	for (ep = genv; ep && !STOP_BRKCONT(ep); ep = ep->oenv)
 		if (ep->type == E_LOOP) {
 			if (--quit == 0)
 				break;
@@ -590,14 +666,11 @@ c_brkcont(char **wp)
 			warningf(true, "%s: cannot %s", wp[0], wp[0]);
 			return 0;
 		}
-		/* POSIX says if n is too big, the last enclosing loop
-		 * shall be used.  Doesn't say to print an error but we
-		 * do anyway 'cause the user messed up.
+		/* POSIX: if n is too big, the outermost enclosing loop
+		 * is used, silently
 		 */
 		if (last_ep)
 			last_ep->flags &= ~EF_BRKCONT_PASS;
-		warningf(true, "%s: can only %s %d level(s)",
-		    wp[0], wp[0], n - quit);
 	}
 
 	unwind(*wp[0] == 'b' ? LBREAK : LCONTIN);
@@ -899,7 +972,7 @@ const struct builtin shbuiltins [] = {
 	{"*=shift", c_shift},
 	{"*=times", c_times},
 	{"*=trap", c_trap},
-	{"+=wait", c_wait},
+	{"+wait", c_wait},
 	{"+read", c_read},
 	{"test", c_test},
 	{"+true", c_label},
@@ -921,6 +994,40 @@ const struct builtin shbuiltins [] = {
 
 
 
+/*
+ * cd -L: POSIX says a .. component removes the component before it only
+ * if that is a directory; otherwise cd fails. Check each one that will
+ * be removed; return -1, with errno set, if one isn't a directory.
+ */
+static int
+cd_dotdot(char *path)
+{
+	struct stat sb;
+	char *p, *q;
+	int r;
+
+	for (p = path; (p = strstr(p, "/..")) != NULL; p += 3) {
+		if (p[3] != '/' && p[3] != '\0')
+			continue;
+		/* the component before: not none, root, . or .. */
+		for (q = p; q > path && q[-1] != '/'; q--)
+			;
+		if (q == p || (p - q == 1 && *q == '.') ||
+		    (p - q == 2 && q[0] == '.' && q[1] == '.'))
+			continue;
+		*p = '\0';
+		r = stat(path, &sb);
+		*p = '/';
+		if (r == -1)
+			return -1;
+		if (!S_ISDIR(sb.st_mode)) {
+			errno = ENOTDIR;
+			return -1;
+		}
+	}
+	return 0;
+}
+
 int
 c_cd(char **wp)
 {
@@ -935,9 +1042,13 @@ c_cd(char **wp)
 	int phys_path;
 	char *cdpath;
 	char *fdir = NULL;
+	int eflag = 0, rv_e = 0;
 
-	while ((optc = ksh_getopt(wp, &builtin_opt, "LP")) != -1)
+	while ((optc = ksh_getopt(wp, &builtin_opt, "eLP")) != -1)
 		switch (optc) {
+		case 'e':
+			eflag = 1;
+			break;
 		case 'L':
 			physical = 0;
 			break;
@@ -966,6 +1077,10 @@ c_cd(char **wp)
 	} else if (!wp[1]) {
 		/* One argument: - or dir */
 		dir = wp[0];
+		if (*dir == '\0') {
+			bi_errorf("empty directory");
+			return 1;
+		}
 		if (strcmp(dir, "-") == 0) {
 			dir = str_val(oldpwd_s);
 			if (dir == null) {
@@ -1006,17 +1121,37 @@ c_cd(char **wp)
 		return 1;
 	}
 
+	/* POSIX lets cd fail if it can't set PWD or OLDPWD */
+	if ((pwd_s->flag | oldpwd_s->flag) & RDONLY) {
+		bi_errorf("%s: is read only",
+		    pwd_s->flag & RDONLY ? "PWD" : "OLDPWD");
+		afree(fdir, ATEMP);
+		return 1;
+	}
+
 	Xinitn(xs, PATH_MAX, ATEMP);
 
 	cdpath = str_val(global("CDPATH"));
 	do {
 		cdnode = make_path(current_wd, dir, &cdpath, &xs, &phys_path);
+		/* POSIX: if no CDPATH entry leads to a directory, the
+		 * operand is taken as it is, relative to .
+		 */
+		if (cdnode && cdpath == NULL)
+			cdpath = null;
 		if (physical)
 			rval = chdir(try = Xstr(xs) + phys_path);
-		else {
+		else if (cd_dotdot(try = Xstr(xs))) {
+			/* a .. after something not a directory */
+			rval = -1;
+		} else {
 			simplify_path(Xstr(xs));
 			rval = chdir(try = Xstr(xs));
 		}
+		/* the full path may be too long where dir is not */
+		if (rval == -1 && errno == ENAMETOOLONG && !cdnode &&
+		    *dir != '/')
+			rval = chdir(dir);
 	} while (rval == -1 && cdpath != NULL);
 
 	if (rval == -1) {
@@ -1025,7 +1160,8 @@ c_cd(char **wp)
 		else
 			bi_errorf("%s - %s", try, strerror(errno));
 		afree(fdir, ATEMP);
-		return 1;
+		/* with -e and -P, 1 means PWD could not be set */
+		return (physical && eflag) ? 2 : 1;
 	}
 
 	/* Clear out tracked aliases with relative paths */
@@ -1041,8 +1177,12 @@ c_cd(char **wp)
 	if (Xstr(xs)[0] != '/') {
 		pwd = NULL;
 	} else
-	if (!physical || !(pwd = get_phys_path(Xstr(xs))))
+	if (!physical || !(pwd = get_phys_path(Xstr(xs)))) {
+		/* -e: with -P, fail if PWD cannot be determined */
+		if (physical && eflag)
+			rv_e = 1;
 		pwd = Xstr(xs);
+	}
 
 	/* Set PWD */
 	if (pwd) {
@@ -1060,7 +1200,7 @@ c_cd(char **wp)
 
 	afree(fdir, ATEMP);
 
-	return 0;
+	return rv_e;
 }
 
 int
@@ -1089,7 +1229,8 @@ c_pwd(char **wp)
 	}
 	p = current_wd[0] ? (physical ? get_phys_path(current_wd) : current_wd) :
 	    NULL;
-	if (p && access(p, R_OK) == -1)
+	/* too long to check is not wrong */
+	if (p && access(p, R_OK) == -1 && errno != ENAMETOOLONG)
 		p = NULL;
 	if (!p) {
 		freep = p = ksh_get_wd(NULL, 0);
@@ -1375,6 +1516,14 @@ c_whence(char **wp)
 		}
 		if (!tp)
 			tp = findcom(id, fcflags);
+		if ((tp->type == CEXEC || tp->type == CTALIAS) &&
+		    !(tp->flag & ISSET)) {
+			/* not found: a diagnostic, not output */
+			if (vflag)
+				warningf(false, "%s: not found", id);
+			ret = 1;
+			continue;
+		}
 		if (vflag || (tp->type != CALIAS && tp->type != CEXEC &&
 		    tp->type != CTALIAS))
 			shprintf("%s", id);
@@ -1422,6 +1571,11 @@ c_whence(char **wp)
 						    (tp->flag & EXPORT) ?
 						    "exported " : "");
 				}
+				/* POSIX wants an absolute pathname */
+				if (tp->val.s[0] != '/' && current_wd[0])
+					shprintf("%s%s", current_wd,
+					    current_wd[strlen(current_wd) - 1]
+					    == '/' ? "" : "/");
 				shprintf("%s", tp->val.s);
 			} else {
 				if (vflag)
@@ -1625,9 +1779,17 @@ c_typeset(char **wp)
 					    f->flag & FKSH ?
 					    "function %s %T\n" :
 					    "%s() %T\n", wp[i], f->val.t);
-			} else if (!typeset(wp[i], fset, fclr, field, base)) {
-				bi_errorf("%s: not identifier", wp[i]);
-				return 1;
+			} else {
+				typeset_bierr = 1;
+				vp = typeset(wp[i], fset, fclr, field, base);
+				if (vp == NULL && typeset_bierr == 2) {
+					typeset_bierr = 0;
+					return 1;
+				}
+				if (vp == NULL) {
+					bi_errorf("%s: not identifier", wp[i]);
+					return 1;
+				}
 			}
 		}
 		return rval;
@@ -1752,6 +1914,24 @@ c_typeset(char **wp)
 	return 0;
 }
 
+/* hash: alias -t, a builtin rather than an alias, so that, say, a
+ * function can override it
+ */
+int
+c_hash(char **wp)
+{
+	char **nwp;
+	int n;
+
+	for (n = 0; wp[n] != NULL; n++)
+		;
+	nwp = areallocarray(NULL, n + 2, sizeof(char *), ATEMP);
+	nwp[0] = wp[0];
+	nwp[1] = "-t";
+	memcpy(nwp + 2, wp + 1, n * sizeof(char *));
+	return c_alias(nwp);
+}
+
 int
 c_alias(char **wp)
 {
@@ -1853,7 +2033,7 @@ c_alias(char **wp)
 				}
 				shprintf("\n");
 			} else {
-				shprintf("%s alias not found\n", alias);
+				bi_errorf("%s: not found", alias);
 				rv = 1;
 			}
 			continue;
@@ -1872,8 +2052,14 @@ c_alias(char **wp)
 			if (newval) {
 				ap->val.s = str_save(newval, APERM);
 				ap->flag |= ALLOC|ISSET;
-			} else
+			} else {
 				ap->flag &= ~ISSET;
+				/* hash: a utility that cannot be found */
+				if (tflag && !findcom(alias, FC_BI|FC_FUNC)) {
+					bi_errorf("%s: not found", alias);
+					rv = 1;
+				}
+			}
 		}
 		ap->flag |= DEFINED;
 		if (prefix == '+')
@@ -1913,7 +2099,8 @@ c_unalias(char **wp)
 
 	for (; *wp != NULL; wp++) {
 		ap = ktsearch(t, *wp, hash(*wp));
-		if (ap == NULL) {
+		if (ap == NULL || !(ap->flag & ISSET)) {
+			bi_errorf("%s: not found", *wp);
 			rv = 1;	/* POSIX */
 			continue;
 		}
@@ -2197,6 +2384,11 @@ c_getopts(char **wp)
 		bi_errorf("%s: is not an identifier", var);
 		return 1;
 	}
+	/* POSIX lets getopts fail if it can't set OPTIND */
+	if (global("OPTIND")->flag & RDONLY) {
+		bi_errorf("OPTIND: is read only");
+		return 2;
+	}
 
 	if (genv->loc->next == NULL) {
 		internal_warningf("%s: no argv", __func__);
@@ -2233,13 +2425,7 @@ c_getopts(char **wp)
 		buf[1] = '\0';
 	}
 
-	/* at&t ksh does not change OPTIND if it was an unknown option.
-	 * Scripts counting on this are prone to break... (ie, don't count
-	 * on this staying).
-	 */
-	if (optc != '?') {
-		user_opt.uoptind = user_opt.optind;
-	}
+	user_opt.uoptind = user_opt.optind;
 
 	voptarg = global("OPTARG");
 	voptarg->flag &= ~RDONLY;	/* at&t ksh clears ro and int */
@@ -2310,6 +2496,7 @@ const struct builtin kshbuiltins [] = {
 	{"*=export", c_typeset},
 	{"+fc", c_fc},
 	{"+getopts", c_getopts},
+	{"+hash", c_hash},
 	{"+jobs", c_jobs},
 	{"+kill", c_kill},
 	{"let", c_let},
@@ -2905,10 +3092,14 @@ pf_getarg(void)
 static intmax_t
 pf_getsigned(void)
 {
-	char *s = pf_getarg();
+	char *s;
 	char *ep;
 	intmax_t v;
 
+	/* a missing argument is zero */
+	if (*pf_argv == NULL)
+		return 0;
+	s = pf_getarg();
 	if (*s == '\'' || *s == '"')
 		return (unsigned char) s[1];
 	errno = 0;
@@ -2926,10 +3117,14 @@ pf_getsigned(void)
 static uintmax_t
 pf_getunsigned(void)
 {
-	char *s = pf_getarg();
+	char *s;
 	char *ep;
 	uintmax_t v;
 
+	/* a missing argument is zero */
+	if (*pf_argv == NULL)
+		return 0;
+	s = pf_getarg();
 	if (*s == '\'' || *s == '"')
 		return (unsigned char) s[1];
 	errno = 0;
@@ -2947,10 +3142,14 @@ pf_getunsigned(void)
 static double
 pf_getdouble(void)
 {
-	char *s = pf_getarg();
+	char *s;
 	char *ep;
 	double v;
 
+	/* a missing argument is zero */
+	if (*pf_argv == NULL)
+		return 0;
+	s = pf_getarg();
 	if (*s == '\'' || *s == '"')
 		return (unsigned char) s[1];
 	errno = 0;

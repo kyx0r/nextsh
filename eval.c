@@ -581,6 +581,11 @@ export(struct tbl *vp, const char *val)
  * set its attributes (INTEGER, RDONLY, EXPORT, TRACE, LJUST, RJUST, ZEROFIL,
  * LCASEV, UCASEV_AL), and optionally set its value if an assignment.
  */
+/* set by c_typeset: report a readonly variable with bi_errorf(), set
+ * typeset_bierr to 2 and return NULL
+ */
+int typeset_bierr;
+
 struct tbl *
 typeset(const char *var, int set, int clr, int field, int base)
 {
@@ -588,7 +593,9 @@ typeset(const char *var, int set, int clr, int field, int base)
 	struct tbl *vpbase, *t;
 	char *tvar;
 	const char *val;
+	int bierr = typeset_bierr;
 
+	typeset_bierr = 0;
 	/* check for valid variable name, search for value */
 	val = skip_varname(var, false);
 	if (val == var)
@@ -639,9 +646,17 @@ typeset(const char *var, int set, int clr, int field, int base)
 	 * (-L/-R/-Z/-i).
 	 */
 	if ((vpbase->flag&RDONLY) &&
-	    (val || clr || (set & ~EXPORT)))
-		/* XXX check calls - is error here ok by POSIX? */
+	    (val || clr || (set & ~EXPORT))) {
+		/* readonly, export and typeset: an error of the utility,
+		 * which doesn't exit the shell after command
+		 */
+		if (bierr) {
+			bi_errorf("%s: is read only", tvar);
+			typeset_bierr = 2;
+			return NULL;
+		}
 		errorf("%s: is read only", tvar);
+	}
 	if (val)
 		afree(tvar, ATEMP);
 
@@ -1350,6 +1365,7 @@ static void	   evalerr(Expr_state *, enum error_type, const char *)
 		    __attribute__((__noreturn__));
 static struct tbl *evalexpr(Expr_state *, enum prec);
 static void	   token(Expr_state *);
+static void	   noassign_on(Expr_state *);
 static struct tbl *do_ppmm(Expr_state *, enum token, struct tbl *, bool);
 static void	   assign_check(Expr_state *, enum token, struct tbl *);
 static struct tbl *tempvar(void);
@@ -1623,7 +1639,7 @@ evalexpr(Expr_state *es, enum prec prec)
 			break;
 		case O_LAND:
 			if (!vl->val.i)
-				es->noassign++;
+				noassign_on(es);
 			vr = intvar(es, evalexpr(es, ((int) prec) - 1));
 			res = vl->val.i && vr->val.i;
 			if (!vl->val.i)
@@ -1631,7 +1647,7 @@ evalexpr(Expr_state *es, enum prec prec)
 			break;
 		case O_LOR:
 			if (vl->val.i)
-				es->noassign++;
+				noassign_on(es);
 			vr = intvar(es, evalexpr(es, ((int) prec) - 1));
 			res = vl->val.i || vr->val.i;
 			if (vl->val.i)
@@ -1642,7 +1658,7 @@ evalexpr(Expr_state *es, enum prec prec)
 				int e = vl->val.i != 0;
 
 				if (!e)
-					es->noassign++;
+					noassign_on(es);
 				vl = evalexpr(es, MAX_PREC);
 				if (!e)
 					es->noassign--;
@@ -1650,7 +1666,7 @@ evalexpr(Expr_state *es, enum prec prec)
 					evalerr(es, ET_STR, "missing :");
 				token(es);
 				if (e)
-					es->noassign++;
+					noassign_on(es);
 				vr = evalexpr(es, P_TERN);
 				if (e)
 					es->noassign--;
@@ -1675,6 +1691,20 @@ evalexpr(Expr_state *es, enum prec prec)
 			vl->val.i = res;
 	}
 	return vl;
+}
+
+/* Stop assigning, for the operand not evaluated by && || ?:.  The
+ * variable already read as the next token is swapped for a temporary,
+ * or rw++ in 0 && rw++ would still change it.
+ */
+static void
+noassign_on(Expr_state *es)
+{
+	es->noassign++;
+	if (es->tok == VAR) {
+		es->val = tempvar();
+		es->val->flag |= EXPRLVALUE;
+	}
 }
 
 static void
@@ -1803,6 +1833,10 @@ intvar(Expr_state *es, struct tbl *vp)
 	    (vp->flag & (ISSET|INTEGER|EXPRLVALUE)) == (ISSET|INTEGER))
 		return vp;
 
+	/* set -u: using an unset variable is an error here too */
+	if (Flag(FNOUNSET) && vp->name[0] != '\0' && !(vp->flag & ISSET))
+		errorf("%s: parameter not set", vp->name);
+
 	vq = tempvar();
 	if (setint_v(vq, vp, es->arith) == NULL) {
 		if (vp->flag & EXPRINEVAL)
@@ -1846,6 +1880,7 @@ typedef struct Expand {
 	} u;			/* source */
 	struct tbl *var;	/* variable in ${var..} */
 	short	split;		/* split "$@" / call waitlast $() */
+	char	vec;		/* ${@#..}, ${*%..}: '@' or '*' */
 } Expand;
 
 #define	XBASE		0	/* scanning original */
@@ -1961,6 +1996,8 @@ typedef struct SubType {
 	short	f;		/* saved value of f (DOPAT, etc) */
 	struct tbl *var;	/* variable for ${var..} */
 	short	quote;		/* saved value of quote (for ${..[%#]..}) */
+	char	vec;		/* trimming each of $@ or $*: '@' or '*' */
+	short	word;		/* field splitting state before ${@#..} */
 	struct SubType *prev;	/* old type */
 	struct SubType *next;	/* poped type (to avoid re-allocating) */
 } SubType;
@@ -1985,6 +2022,7 @@ expand(char *cp,	/* input word */
 	int newlines = 0; /* For trailing newlines in COMSUB */
 	int saw_eq, tilde_ok;
 	int make_magic;
+	int bsquote = 0;	/* \ from an expansion quotes the next char */
 	size_t len;
 
 	if (cp == NULL)
@@ -2009,7 +2047,7 @@ expand(char *cp,	/* input word */
 	tilde_ok = (f & (DOTILDE|DOASNTILDE)) ? 1 : 0; /* must be 1/0 */
 	doblank = 0;
 	make_magic = 0;
-	word = (f&DOBLANK) ? IFS_WS : IFS_WORD;
+	word = (f&DOBLANK) ? IFS_IWS : IFS_WORD;
 
 	memset(&st_head, 0, sizeof(st_head));
 	st = &st_head;
@@ -2079,7 +2117,6 @@ expand(char *cp,	/* input word */
 					*dp++ = ')'; *dp++ = ')';
 				} else {
 					struct tbl v;
-					char *p;
 
 					v.flag = DEFINED|ISSET|INTEGER;
 					v.type = 10; /* not default */
@@ -2087,10 +2124,16 @@ expand(char *cp,	/* input word */
 					v_evaluate(&v, substitute(sp, 0),
 					    KSH_UNWIND_ERROR, true);
 					sp = strchr(sp, 0) + 1;
-					for (p = str_val(&v); *p; ) {
-						Xcheck(ds, dp);
-						*dp++ = *p++;
-					}
+					/* the result is field split (and a -
+					 * may make a range in a pattern) like
+					 * that of $var
+					 */
+					x.str = str_save(str_val(&v), ATEMP);
+					type = XSUB;
+					if (f&DOBLANK)
+						doblank++;
+					if (word == IFS_QUOTE)
+						word = IFS_WORD;
 				}
 				continue;
 			case OSUBST: /* ${{#}var{:}[=+-?#%]word} */
@@ -2126,7 +2169,9 @@ expand(char *cp,	/* input word */
 				if (f&DOBLANK)
 					doblank++;
 				tilde_ok = 0;
-				if (word == IFS_QUOTE && type != XNULLSUB)
+				/* "${@#x}" may yet be no word at all */
+				if (word == IFS_QUOTE && type != XNULLSUB &&
+				    x.vec != '@')
 					word = IFS_WORD;
 				if (type == XBASE) {	/* expand? */
 					if (!st->next) {
@@ -2143,6 +2188,8 @@ expand(char *cp,	/* input word */
 					st->base = Xsavepos(ds, dp);
 					st->f = f;
 					st->var = varcpy(x.var);
+					st->vec = x.vec;
+					st->word = word;
 					st->quote = quote;
 					/* skip qualifier(s) */
 					if (stype)
@@ -2150,9 +2197,12 @@ expand(char *cp,	/* input word */
 					switch (stype & 0x7f) {
 					case '#':
 					case '%':
-						/* ! DOBLANK,DOBRACE_,DOTILDE */
+						/* ! DOBLANK,DOBRACE_; the pattern
+						 * gets tilde expansion
+						 */
 						f = DOPAT | (f&DONTRUNCOMMAND) |
-						    DOTEMP_;
+						    DOTEMP_ | DOTILDE;
+						tilde_ok = 1;
 						quote = 0;
 						/* Prepend open pattern (so |
 						 * in a trim will work as
@@ -2206,6 +2256,12 @@ expand(char *cp,	/* input word */
 			case CSUBST: /* only get here if expanding word */
 				sp++; /* ({) skip the } or x */
 				tilde_ok = 0;	/* in case of ${unset:-} */
+				if (bsquote) {
+					/* a \ at the end of the pattern */
+					XcheckN(ds, dp, 2);
+					*dp++ = '\\';
+					bsquote = 0;
+				}
 				*dp = '\0';
 				quote = st->quote;
 				f = st->f;
@@ -2217,6 +2273,41 @@ expand(char *cp,	/* input word */
 					/* Append end-pattern */
 					*dp++ = MAGIC; *dp++ = ')'; *dp = '\0';
 					dp = Xrestpos(ds, dp, st->base);
+					if (st->vec) {
+						/* trim each of $@ or $*,
+						 * then expand them like
+						 * $@ or $* would be
+						 */
+						char **av = genv->loc->argv;
+
+						word = st->word;
+						int n = genv->loc->argc, i;
+						const char **v = areallocarray(
+						    NULL, n + 1, sizeof(char *),
+						    ATEMP);
+
+						for (i = 0; i < n; i++)
+							v[i] = trimsub(str_save(
+							    av[i + 1], ATEMP), dp,
+							    st->stype);
+						v[n] = NULL;
+						x.split = st->vec == '@';
+						if (n == 0) {
+							x.str = null;
+							type = x.split ?
+							    XNULLSUB : XSUB;
+						} else {
+							x.u.strv = v + 1;
+							x.str = v[0];
+							type = XARG;
+							if (word == IFS_QUOTE)
+								word = IFS_WORD;
+						}
+						if (f&DOBLANK)
+							doblank++;
+						st = st->prev;
+						continue;
+					}
 					/* Must use st->var since calling
 					 * global would break things
 					 * like x[i+=1].
@@ -2310,6 +2401,9 @@ expand(char *cp,	/* input word */
 			type = XBASE;
 			if (f&DOBLANK) {
 				doblank--;
+				/* but ""$@ is the "" */
+				if (word == IFS_QUOTE && !quote)
+					word = IFS_WORD;
 				if (dp == Xstring(ds, dp) && word != IFS_WORD)
 					word = IFS_IWS;
 			}
@@ -2385,12 +2479,21 @@ expand(char *cp,	/* input word */
 					subst_exstat = waitlast();
 				else
 					subst_exstat = (x.u.shf == NULL);
+				subst_done = 1;
 				type = XBASE;
 				if (f&DOBLANK)
 					doblank--;
 				continue;
 			}
 			break;
+		}
+
+		/* a \ from an expansion at the end is itself */
+		if (c == 0 && bsquote) {
+			XcheckN(ds, dp, 2);
+			*dp++ = '\\';
+			bsquote = 0;
+			word = IFS_WORD;
 		}
 
 		/* check for end of word or IFS separation */
@@ -2426,27 +2529,24 @@ expand(char *cp,	/* input word */
 					XPput(*wp, debunk(p, p, strlen(p) + 1));
 				fdo = 0;
 				saw_eq = 0;
-				tilde_ok = (f & (DOTILDE|DOASNTILDE)) ? 1 : 0;
+				/* tilde expansion came before field
+				 * splitting: no ~ starts a later field
+				 */
+				tilde_ok = 0;
 				if (c != 0)
 					Xinit(ds, dp, 128, ATEMP);
 			}
 			if (c == 0)
 				goto done;
-			if (word != IFS_NWS)
+			/* leading white space keeps IFS_IWS, so that
+			 * " : " with IFS=" :" still makes an empty field
+			 */
+			if (word != IFS_NWS &&
+			    (word != IFS_IWS || !ctype(c, C_IFSWS)))
 				word = ctype(c, C_IFSWS) ? IFS_WS : IFS_NWS;
 		} else {
-			if (type == XSUB) {
-				if (word == IFS_NWS &&
-				    Xlength(ds, dp) == 0) {
-					char *p;
-
-					if ((p = strdup("")) == NULL)
-						internal_errorf("unable "
-						    "to allocate memory");
-					XPput(*wp, p);
-				}
+			if (type == XSUB)
 				type = XSUBMID;
-			}
 
 			/* age tilde_ok info - ~ code tests second bit;
 			 * masking keeps the shift defined, since the bits
@@ -2454,8 +2554,18 @@ expand(char *cp,	/* input word */
 			 */
 			tilde_ok = (tilde_ok << 1) & 3;
 			/* mark any special second pass chars */
-			if (!quote)
+			if (!quote && !bsquote)
 				switch (c) {
+				case '\\':
+					/* in a pattern, a \ resulting from an
+					 * expansion quotes the next character
+					 */
+					if ((f & DOPAT) && !(f & DOGLOB) &&
+					    type != XBASE) {
+						bsquote = 1;
+						continue;
+					}
+					break;
 				case '[':
 				case '!':
 				case '-':
@@ -2488,8 +2598,11 @@ expand(char *cp,	/* input word */
 					}
 					break;
 				case '=':
-					/* Note first unquoted = for ~ */
-					if (!(f & DOTEMP_) && !saw_eq) {
+					/* Note first unquoted = for ~, in
+					 * assignments only (not echo a=~)
+					 */
+					if (!(f & DOTEMP_) && !saw_eq &&
+					    (f & DOASNTILDE)) {
 						saw_eq = 1;
 						tilde_ok = 1;
 					}
@@ -2515,8 +2628,10 @@ expand(char *cp,	/* input word */
 						    &ds, &dp_x,
 						    f & DOASNTILDE);
 						if (p) {
-							if (dp != dp_x)
-								word = IFS_WORD;
+							/* as if quoted: an empty
+							 * HOME is still a field
+							 */
+							word = IFS_WORD;
 							dp = dp_x;
 							sp = p;
 							continue;
@@ -2524,8 +2639,10 @@ expand(char *cp,	/* input word */
 					}
 					break;
 				}
-			else
+			else {
 				quote &= ~2; /* undo temporary */
+				bsquote = 0;
+			}
 
 			if (make_magic) {
 				make_magic = 0;
@@ -2569,6 +2686,7 @@ varsub(Expand *xp, char *sp, char *word,
 		return -1;
 
 	xp->var = NULL;
+	xp->vec = 0;
 
 	/* ${#var}, string length or array size */
 	if (sp[0] == '#' && (c = sp[1]) != '\0') {
@@ -2630,9 +2748,16 @@ varsub(Expand *xp, char *sp, char *word,
 	if (c == '*' || c == '@') {
 		switch (stype & 0x7f) {
 		case '=':	/* can't assign to a vector */
-		case '%':	/* can't trim a vector (yet) */
-		case '#':
 			return -1;
+		case '%':	/* each one is trimmed, see expand() */
+		case '#':
+			if (stype & 0x80 && word[0] == CHAR &&
+			    word[1] == ':')
+				return -1;	/* no ${@:#x} */
+			xp->vec = c;
+			*stypep = stype;
+			*slenp = slen;
+			return XBASE;
 		}
 		if (genv->loc->argc == 0) {
 			xp->str = null;

@@ -255,6 +255,12 @@ extern	pid_t	procpid;	/* pid of executing process */
 extern	uid_t	ksheuid;	/* effective uid of shell */
 extern	int	exstat;		/* exit status */
 extern	int	subst_exstat;	/* exit status of last $(..)/`..` */
+extern	int	subst_done;	/* the command had a $(..)/`..` */
+extern	int	trap_exstat;	/* $? before the running trap, or -1 */
+extern	int	trap_infunc;	/* in a function called by a trap action */
+extern	int	builtin_xerrok;	/* builtin runs where set -e is ignored */
+extern	int	shell_xerrok;	/* next shell() ignores set -e */
+extern	int	traps_inherited; /* subshell has not changed traps yet */
 extern	const char *safe_prompt; /* safe prompt if PS1 substitution fails */
 extern	char	username[];	/* username for \u prompt expansion */
 extern	int	disable_subst;	/* disable substitution during evaluation */
@@ -303,10 +309,12 @@ extern	struct env	*genv;
 #define EF_FUNC_PARSE	BIT(0)	/* function being parsed */
 #define EF_BRKCONT_PASS	BIT(1)	/* set if E_LOOP must pass break/continue on */
 #define EF_FAKE_SIGDIE	BIT(2)	/* hack to get info from unwind to quitenv */
+#define EF_EVAL		BIT(3)	/* E_PARSE of eval: pass break/continue on */
 
 /* Do breaks/continues stop at env type e? */
-#define STOP_BRKCONT(t)	((t) == E_NONE || (t) == E_PARSE \
-			 || (t) == E_FUNC || (t) == E_INCL)
+#define STOP_BRKCONT(ep)	((ep)->type == E_NONE || (ep)->type == E_FUNC \
+			 || (ep)->type == E_INCL || \
+			 ((ep)->type == E_PARSE && !((ep)->flags & EF_EVAL)))
 /* Do returns stop at env type e? */
 #define STOP_RETURN(t)	((t) == E_FUNC || (t) == E_INCL)
 
@@ -415,6 +423,7 @@ typedef struct trap {
 	const char *name;	/* short name */
 	const char *mess;	/* descriptive name */
 	char   *trap;		/* trap command */
+	char   *otrap;		/* trap command before the subshell */
 	volatile sig_atomic_t set; /* trap pending */
 	int	flags;		/* TF_* */
 	sh_sig_t cursig;		/* current handler (valid if TF_ORIG_* set) */
@@ -859,6 +868,7 @@ struct op {
 	union { /* WARNING: newtp(), tcopy() use evalflags = 0 to clear union */
 		short	evalflags;	/* TCOM: arg expansion eval() flags */
 		short	ksh_func;	/* TFUNC: function x (vs x()) */
+		short	fallthru;	/* TPAT: ended by ;& */
 	} u;
 	char  **args;			/* arguments to a command */
 	char  **vars;			/* variable assignments */
@@ -1153,6 +1163,7 @@ struct source {
 #define SF_ALIAS	BIT(1)	/* faking space at end of alias */
 #define SF_ALIASEND	BIT(2)	/* faking space at end of alias */
 #define SF_TTY		BIT(3)	/* type == SSTDIN & it is a tty */
+#define SF_LINES	BIT(4)	/* SSTRING parsed a line at a time (-c) */
 
 typedef union {
 	int	i;
@@ -1188,6 +1199,7 @@ typedef union {
 #define BANG	278		/* ! */
 #define DBRACKET 279		/* [[ .. ]] */
 #define COPROC	280		/* |& */
+#define CASEFT	281		/* ;& */
 #define	YYERRCODE 300
 
 /* flags to yylex */
@@ -1242,6 +1254,7 @@ int	c_command(char **);
 int	c_type(char **);
 int	c_typeset(char **);
 int	c_alias(char **);
+int	c_hash(char **);
 int	c_unalias(char **);
 int	c_let(char **);
 int	c_jobs(char **);
@@ -1445,6 +1458,7 @@ struct tbl *setint_v(struct tbl *, struct tbl *, bool);
 void	setint(struct tbl *, int64_t);
 int	getint(struct tbl *, int64_t *, bool);
 struct tbl *typeset(const char *, int, int, int, int);
+extern int typeset_bierr;
 void	unset(struct tbl *, int);
 char  * skip_varname(const char *, int);
 char	*skip_wdvarname(const char *, int);
