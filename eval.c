@@ -2451,7 +2451,10 @@ expand(char *cp,	/* input word */
 					XPput(*wp, debunk(p, p, strlen(p) + 1));
 				fdo = 0;
 				saw_eq = 0;
-				tilde_ok = (f & (DOTILDE|DOASNTILDE)) ? 1 : 0;
+				/* tilde expansion came before field
+				 * splitting: no ~ starts a later field
+				 */
+				tilde_ok = 0;
 				if (c != 0)
 					Xinit(ds, dp, 128, ATEMP);
 			}
