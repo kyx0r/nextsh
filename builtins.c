@@ -1483,6 +1483,11 @@ c_whence(char **wp)
 						    (tp->flag & EXPORT) ?
 						    "exported " : "");
 				}
+				/* POSIX wants an absolute pathname */
+				if (tp->val.s[0] != '/' && current_wd[0])
+					shprintf("%s%s", current_wd,
+					    current_wd[strlen(current_wd) - 1]
+					    == '/' ? "" : "/");
 				shprintf("%s", tp->val.s);
 			} else {
 				if (vflag)
