@@ -2343,6 +2343,11 @@ c_getopts(char **wp)
 		bi_errorf("%s: is not an identifier", var);
 		return 1;
 	}
+	/* POSIX lets getopts fail if it can't set OPTIND */
+	if (global("OPTIND")->flag & RDONLY) {
+		bi_errorf("OPTIND: is read only");
+		return 2;
+	}
 
 	if (genv->loc->next == NULL) {
 		internal_warningf("%s: no argv", __func__);
