@@ -1,6 +1,6 @@
 .\"	Public Domain
 .\"
-.Dd Sep 26, 2026
+.Dd Oct  1, 2026
 .Dt NEXTSH 1
 .Os Nextsh 1.0
 .Sh NAME
@@ -792,7 +792,7 @@ $ [[ -r foo && $(< foo) = b*r ]]
 .Ss Quoting
 Quoting is used to prevent the shell from treating characters or words
 specially.
-There are three methods of quoting.
+There are four methods of quoting.
 First,
 .Ql \e
 quotes the following character, unless it is at the end of a line, in which
@@ -830,6 +830,56 @@ the
 and the newline are stripped; otherwise, both the
 .Ql \e
 and the character following are unchanged.
+.Pp
+Fourth,
+.Li $'...'
+quotes everything up to the next unescaped single quote, as a single quote
+does, except that backslash escape sequences are replaced:
+.Pp
+.Bl -tag -width "\eUHHHHHHHH" -compact -offset indent
+.It Li \ea
+alert (bell)
+.It Li \eb
+backspace
+.It Li \ee
+escape
+.It Li \ef
+form feed
+.It Li \en
+newline
+.It Li \er
+carriage return
+.It Li \et
+horizontal tab
+.It Li \ev
+vertical tab
+.It Li \e\e , \e' , \e\&"
+the second character
+.It Li \ec Ns Ar X
+control-\c
+.Ar X ;
+.Li \ec?\&
+is DEL and
+.Li \ec\e\e
+is control-backslash
+.It Li \ex Ns Ar HH
+the byte with the value of one or two hexadecimal digits
+.It Li \eu Ns Ar HHHH
+the UTF-8 encoding of the character with the value of one to four hexadecimal
+digits
+.It Li \eU Ns Ar HHHHHHHH
+the same, for one to eight hexadecimal digits
+.It Li \e Ns Ar OOO
+the byte with the value of one to three octal digits
+.El
+.Pp
+Any other backslash is kept.
+A
+.Li \e0
+or other escape that yields a NUL byte ends the string; the rest of it, up to
+the closing single quote, is discarded.
+.Li $'...'
+is not special inside double quotes or here documents.
 .Ss Aliases
 There are two types of aliases: normal command aliases and tracked aliases.
 Command aliases are normally used as a short hand for a long or often used
@@ -850,8 +900,6 @@ The following command aliases are defined automatically by the shell:
 .Ic autoload Ns ='typeset -fu'
 .It
 .Ic functions Ns ='typeset -f'
-.It
-.Ic hash Ns ='alias -t'
 .It
 .Ic history Ns ='fc -l'
 .It
@@ -1679,6 +1727,9 @@ PS1="$x$(print \e\er)$x$(tput so)$x\e$PWD$x$(tput se)$x> "
 Secondary prompt string, by default
 .Sq >\ \& ,
 used when more input is needed to complete a command.
+Parameter expansion is performed on it as for
+.Ev PS1 ,
+unless it contains a command substitution.
 .It Ev PS3
 Prompt used by the
 .Ic select
@@ -3351,7 +3402,9 @@ directories to the root directory) is printed.
 .Pp
 .It Xo
 .Ic read
-.Op Fl prsu Ns Op Ar n
+.Op Fl prs
+.Op Fl d Ar delim
+.Op Fl u Ns Op Ar n
 .Op Ar parameter ...
 .Xc
 Reads a line of input from the standard input, separates the line into fields
@@ -3396,6 +3449,13 @@ above for comments on this), respectively.
 If the
 .Fl s
 option is used, input is saved to the history file.
+The
+.Fl d
+option ends the line at the first character of
+.Ar delim
+instead of a newline; if
+.Ar delim
+is empty, the line ends at a NUL byte.
 .Pp
 .It Xo
 .Ic readonly
@@ -3980,7 +4040,11 @@ The format of the output is:
 0m0.00s 0m0.00s
 .Ed
 .Pp
-.It Ic trap Op Ar handler signal ...
+.It Xo
+.Ic trap
+.Op Ar handler signal ...
+.Xc
+.It Ic trap Fl p Op Ar signal ...
 Sets a trap handler that is to be executed when any of the specified signals are
 received.
 .Ar handler
@@ -4032,6 +4096,22 @@ Note that the output of
 .Ic trap
 cannot be usefully piped to another process (an artifact of the fact that
 traps are cleared when subprocesses are created).
+With
+.Fl p ,
+.Ic trap
+also lists the signals with the default action, as
+.Ic trap \-\- \- Ar signal ,
+or, if signals are given, only those;
+.Dv ERR
+is listed only if named.
+The output of
+.Ic trap
+and
+.Ic trap Fl p
+can be saved with command substitution, e.g.\&
+.Ic save=$(trap) ,
+and later restored with
+.Ic eval \&"$save\&" .
 .Pp
 The original Korn shell's
 .Dv DEBUG
