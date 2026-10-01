@@ -1885,6 +1885,7 @@ runtrap(Trap *p)
 	char	*trapstr = p->trap;
 	int	oexstat;
 	int	otrap_exstat;
+	int	otrap_infunc;
 	int	old_changed = 0;
 
 	p->set = 0;
@@ -1910,12 +1911,15 @@ runtrap(Trap *p)
 	}
 	oexstat = exstat;
 	otrap_exstat = trap_exstat;
+	otrap_infunc = trap_infunc;
 	trap_exstat = oexstat;
+	trap_infunc = 0;
 	/* Note: trapstr is fully parsed before anything is executed, thus
 	 * no problem with afree(p->trap) in settrap() while still in use.
 	 */
 	command(trapstr, current_lineno);
 	trap_exstat = otrap_exstat;
+	trap_infunc = otrap_infunc;
 	exstat = oexstat;
 	if (i == SIGEXIT_ || i == SIGERR_) {
 		if (p->flags & TF_CHANGED)

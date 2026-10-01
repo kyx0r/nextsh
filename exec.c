@@ -559,7 +559,7 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
 
 	case CFUNC:			/* function call */
 	    {
-		volatile int old_xflag, old_inuse;
+		volatile int old_xflag, old_inuse, old_trap_infunc;
 		const char *volatile old_kshname;
 
 		if (!(tp->flag & ISSET)) {
@@ -625,6 +625,10 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
 		old_inuse = tp->flag & FINUSE;
 		tp->flag |= FINUSE;
 
+		/* return in it uses its own $?, even in a trap action */
+		old_trap_infunc = trap_infunc;
+		trap_infunc = 1;
+
 		genv->type = E_FUNC;
 		i = sigsetjmp(genv->jbuf, 0);
 		if (i == 0) {
@@ -633,6 +637,7 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
 			i = LRETURN;
 		}
 		kshname = old_kshname;
+		trap_infunc = old_trap_infunc;
 		Flag(FXTRACE) = old_xflag;
 		tp->flag = (tp->flag & ~FINUSE) | old_inuse;
 		/* Were we deleted while executing?  If so, free the execution

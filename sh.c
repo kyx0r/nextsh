@@ -48,6 +48,7 @@ pid_t	procpid;
 uid_t	ksheuid;
 int	exstat;
 int	trap_exstat = -1;
+int	trap_infunc;
 int	builtin_xerrok;
 int	shell_xerrok;
 int	traps_inherited;

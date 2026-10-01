@@ -557,7 +557,7 @@ c_exitreturn(char **wp)
 			warningf(true, "%s: bad number", arg);
 		} else
 			exstat = n;
-	} else if (trap_exstat >= 0)
+	} else if (trap_exstat >= 0 && (wp[0][0] != 'r' || !trap_infunc))
 		/* in a trap action: the $? from before it */
 		exstat = trap_exstat;
 	trap_exstat = -1;
