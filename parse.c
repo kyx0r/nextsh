@@ -1363,6 +1363,7 @@ set_prompt(int to)
 {
 	char *ps1;
 	Area *saved_atemp;
+	int bs, ibn;
 
 	cur_prompt = to;
 
@@ -1387,7 +1388,28 @@ set_prompt(int to)
 		quitenv(NULL);
 		break;
 	case PS2: /* command continuation */
+		/*
+		 * POSIX: PS2 undergoes parameter expansion. We are in
+		 * the middle of parsing a command: lex the prompt as
+		 * substitute() does, but leave alone a prompt with a
+		 * command substitution, which would parse recursively.
+		 */
 		prompt = str_val(global("PS2"));
+		if (strchr(prompt, '$') == NULL || strchr(prompt, '`') ||
+		    strstr(prompt, "$("))
+			break;
+		ps1 = str_save(prompt, ATEMP);
+		saved_atemp = ATEMP;
+		bs = backslash_skip;
+		ibn = ignore_backslash_newline;
+		newenv(E_ERRH);
+		if (sigsetjmp(genv->jbuf, 0))
+			prompt = "> ";
+		else
+			prompt = str_save(substitute(ps1, 0), saved_atemp);
+		quitenv(NULL);
+		backslash_skip = bs;
+		ignore_backslash_newline = ibn;
 		break;
 	}
 }
