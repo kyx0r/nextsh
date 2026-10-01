@@ -384,6 +384,8 @@ exchild(struct op *t, int flags, volatile int *xerrok,
 	int		rv = 0;
 	int		forksleep;
 	int		ischild;
+	int		bgign;
+	sigset_t	sm_fork;
 
 	if (flags & XEXEC)
 		/* Clear XFORK|XPCLOSE|XCCLOSE|XCOPROC|XPIPEO|XPIPEI|XXCOM|XBGND
@@ -432,6 +434,16 @@ exchild(struct op *t, int flags, volatile int *xerrok,
 
 	snptreef(p->command, sizeof(p->command), "%T", t);
 
+	/* Hold off the signals the child must not lose before it has
+	 * reset its traps; the child handles them once it has.
+	 */
+	sigemptyset(&sm_fork);
+	sigaddset(&sm_fork, SIGINT);
+	sigaddset(&sm_fork, SIGQUIT);
+	sigaddset(&sm_fork, SIGTERM);
+	sigaddset(&sm_fork, SIGHUP);
+	sigprocmask(SIG_BLOCK, &sm_fork, NULL);
+
 	/* create child process */
 	forksleep = 1;
 	while ((i = fork()) == -1 && errno == EAGAIN && forksleep < 32) {
@@ -449,8 +461,10 @@ exchild(struct op *t, int flags, volatile int *xerrok,
 	ischild = i == 0;
 	if (ischild)
 		p->pid = procpid = getpid();
-	else
+	else {
 		p->pid = i;
+		sigprocmask(SIG_UNBLOCK, &sm_fork, NULL);
+	}
 
 	/* job control set up */
 	if (Flag(FMONITOR) && !(flags&XXCOM)) {
@@ -481,7 +495,15 @@ exchild(struct op *t, int flags, volatile int *xerrok,
 		/* Do this before restoring signal */
 		if (flags & XCOPROC)
 			coproc_cleanup(false);
-		sigprocmask(SIG_SETMASK, &omask, NULL);
+		{
+			sigset_t m = omask;
+
+			sigaddset(&m, SIGINT);
+			sigaddset(&m, SIGQUIT);
+			sigaddset(&m, SIGTERM);
+			sigaddset(&m, SIGHUP);
+			sigprocmask(SIG_SETMASK, &m, NULL);
+		}
 		cleanup_parents_env();
 		/* If FMONITOR or FTALKING is set, these signals are ignored,
 		 * if neither FMONITOR nor FTALKING are set, the signals have
@@ -494,11 +516,8 @@ exchild(struct op *t, int flags, volatile int *xerrok,
 		}
 		if (Flag(FBGNICE) && (flags & XBGND))
 			nice(4);
-		if ((flags & XBGND) && !Flag(FMONITOR)) {
-			setsig(&sigtraps[SIGINT], SIG_IGN,
-			    SS_RESTORE_IGN|SS_FORCE);
-			setsig(&sigtraps[SIGQUIT], SIG_IGN,
-			    SS_RESTORE_IGN|SS_FORCE);
+		bgign = (flags & XBGND) && !Flag(FMONITOR);
+		if (bgign) {
 			if (!(flags & (XPIPEI | XCOPROC))) {
 				int fd = open("/dev/null", O_RDONLY);
 				if (fd != 0) {
@@ -514,6 +533,14 @@ exchild(struct op *t, int flags, volatile int *xerrok,
 		Flag(FTALKING) = 0;
 		tty_close();
 		cleartraps();
+		/* after cleartraps(), which would reset trapped ones */
+		if (bgign) {
+			setsig(&sigtraps[SIGINT], SIG_IGN,
+			    SS_RESTORE_IGN|SS_FORCE);
+			setsig(&sigtraps[SIGQUIT], SIG_IGN,
+			    SS_RESTORE_IGN|SS_FORCE);
+		}
+		sigprocmask(SIG_UNBLOCK, &sm_fork, NULL);
 		execute(t, (flags & XERROK) | XEXEC, NULL); /* no return */
 		internal_warningf("%s: execute() returned", __func__);
 		unwind(LLEAVE);

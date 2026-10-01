@@ -371,6 +371,9 @@ execute(struct op *volatile t,
 		s = t->args[0];
 		ap = makenv();
 		restoresigs();
+		/* a signal caught on the way here is not lost */
+		if (trap)
+			runtraps(TF_DFL_INTR|TF_FATAL);
 		cleanup_proc_env();
 		execve(t->str, t->args, ap);
 		if (errno == ENOEXEC)
