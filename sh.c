@@ -667,6 +667,12 @@ unwind(int i)
 			/* FALLTHROUGH */
 
 		default:
+			/* exiting on an error: the EXIT trap still runs */
+			if (genv->oenv == NULL && i == LERROR &&
+			    sigtraps[SIGEXIT_].trap) {
+				i = LLEAVE;
+				runtrap(&sigtraps[SIGEXIT_]);
+			}
 			quitenv(NULL);
 			/*
 			 * quitenv() may have reclaimed the memory

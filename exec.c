@@ -700,7 +700,7 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
   Leave:
 	if (flags & XEXEC) {
 		exstat = rv;
-		unwind(LLEAVE);
+		unwind(LEXIT);	/* runs the EXIT trap */
 	}
 	return rv;
 }
