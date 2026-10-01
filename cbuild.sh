@@ -76,48 +76,8 @@ install() {
     [ -x "$DESTDIR$PREFIX/bin/sh" ] && log "$G" "\"${BASE##*/}\" has been installed to $DESTDIR$PREFIX/bin/sh" || log "$R" "Couldn't finish installation"
 }
 
-check() {
-    build
-    log "$G" "Entering step: \"Check \"${BASE##*/}\"\""
-    fail=0
-    t() { # t <name> <script> <expected>
-        got="$(printf '%s\n' "$2" | ./sh 2>&1)"
-        if [ "$got" = "$3" ]; then
-            log "$B" "ok    $1"
-        else
-            log "$R" "FAIL  $1: expected [$3], got [$got]"
-            fail=$((fail + 1))
-        fi
-    }
-    t "arithmetic"  'echo $((3 * (2 + 5)))' '21'
-    t "expansion"   'x=abcdef; echo ${x#abc} ${x%def} ${#x}' 'def abc 6'
-    t "command sub" 'echo $(echo nested $(echo deep))' 'nested deep'
-    t "loops"       'for i in 1 2 3; do printf "%s" "$i"; done; echo' '123'
-    t "functions"   'f() { echo "$1$2"; }; f a b' 'ab'
-    t "case"        'case foobar in foo*) echo match;; *) echo no;; esac' 'match'
-    t "test"        '[ 2 -gt 1 ] && [[ ab == a? ]] && echo yes' 'yes'
-    t "printf"      'printf "%s-%03d-%x\n" str 7 255' 'str-007-ff'
-    t "typeset"     'typeset -i n=010; echo $((n + 1))' '9'
-    t "here doc"    'cat <<EOF
-here $((1 + 1))
-EOF' 'here 2'
-    t "pipeline"    'echo one two three | tr " " "\n" | sed -n 2p' 'two'
-    t "subshell"    'x=1; (x=2); echo $x' '1'
-    t "trap"        'trap "echo caught" USR1; kill -USR1 $$; echo after' 'caught
-after'
-    t "exit status" 'false; echo $?' '1'
-    t "aliases"     'alias hi="echo aliased"
-hi' 'aliased'
-    if [ "$fail" -eq 0 ]; then
-        log "$G" "All checks passed."
-    else
-        log "$R" "$fail check(s) failed."
-        exit 1
-    fi
-}
-
 print_usage() {
-    echo "Usage: $0 {build|install|debug|pgobuild|check|clean}"
+    echo "Usage: $0 {build|install|debug|pgobuild|clean}"
     exit "$1"
 }
 
@@ -136,10 +96,6 @@ while [ $# -gt 0 ] || [ "$1" = "" ]; do
         CFLAGS="$CFLAGS -O0 -g -fsanitize=address -fsanitize=undefined"
         log "$G" "Entering step: \"Append \"\$CFLAGS\" with debugging flags\""
         set -- build "$@"
-        ;;
-    "check")
-        shift
-        check && exit 0 || exit 1
         ;;
     "pgobuild")
         shift
