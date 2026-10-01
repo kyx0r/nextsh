@@ -2971,10 +2971,14 @@ pf_getarg(void)
 static intmax_t
 pf_getsigned(void)
 {
-	char *s = pf_getarg();
+	char *s;
 	char *ep;
 	intmax_t v;
 
+	/* a missing argument is zero */
+	if (*pf_argv == NULL)
+		return 0;
+	s = pf_getarg();
 	if (*s == '\'' || *s == '"')
 		return (unsigned char) s[1];
 	errno = 0;
@@ -2992,10 +2996,14 @@ pf_getsigned(void)
 static uintmax_t
 pf_getunsigned(void)
 {
-	char *s = pf_getarg();
+	char *s;
 	char *ep;
 	uintmax_t v;
 
+	/* a missing argument is zero */
+	if (*pf_argv == NULL)
+		return 0;
+	s = pf_getarg();
 	if (*s == '\'' || *s == '"')
 		return (unsigned char) s[1];
 	errno = 0;
@@ -3013,10 +3021,14 @@ pf_getunsigned(void)
 static double
 pf_getdouble(void)
 {
-	char *s = pf_getarg();
+	char *s;
 	char *ep;
 	double v;
 
+	/* a missing argument is zero */
+	if (*pf_argv == NULL)
+		return 0;
+	s = pf_getarg();
 	if (*s == '\'' || *s == '"')
 		return (unsigned char) s[1];
 	errno = 0;
