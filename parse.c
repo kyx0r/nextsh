@@ -2157,6 +2157,7 @@ get_command(int cf)
 {
 	struct op *t;
 	int c, iopn = 0, syniocf;
+	int ncommand = 0;		/* leading "command" words */
 	struct ioword *iop, **iops;
 	XPtrV args, vars;
 	struct nesting_state old_nesting;
@@ -2198,10 +2199,16 @@ get_command(int cf)
 				/* the iopn == 0 and XPsize(vars) == 0 are
 				 * dubious but at&t ksh acts this way
 				 */
+				/* declaration utilities, after any
+				 * number of "command"s
+				 */
 				if (iopn == 0 && XPsize(vars) == 0 &&
-				    XPsize(args) == 0 &&
+				    XPsize(args) == ncommand &&
 				    assign_command(ident))
 					t->u.evalflags = DOVACHECK;
+				if (XPsize(args) == ncommand &&
+				    strcmp(ident, "command") == 0)
+					ncommand++;
 				if ((XPsize(args) == 0 || Flag(FKEYWORD)) &&
 				    is_wdvarassign(yylval.cp))
 					XPput(vars, yylval.cp);
@@ -2751,7 +2758,7 @@ compile(Source *s)
 static int
 assign_command(char *s)
 {
-	if (Flag(FPOSIX) || !*s)
+	if (!*s)
 		return 0;
 	return (strcmp(s, "alias") == 0) ||
 	    (strcmp(s, "export") == 0) ||
