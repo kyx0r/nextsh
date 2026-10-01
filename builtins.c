@@ -1046,6 +1046,14 @@ c_cd(char **wp)
 		return 1;
 	}
 
+	/* POSIX lets cd fail if it can't set PWD or OLDPWD */
+	if ((pwd_s->flag | oldpwd_s->flag) & RDONLY) {
+		bi_errorf("%s: is read only",
+		    pwd_s->flag & RDONLY ? "PWD" : "OLDPWD");
+		afree(fdir, ATEMP);
+		return 1;
+	}
+
 	Xinitn(xs, PATH_MAX, ATEMP);
 
 	cdpath = str_val(global("CDPATH"));
