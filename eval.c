@@ -2028,7 +2028,7 @@ expand(char *cp,	/* input word */
 	tilde_ok = (f & (DOTILDE|DOASNTILDE)) ? 1 : 0; /* must be 1/0 */
 	doblank = 0;
 	make_magic = 0;
-	word = (f&DOBLANK) ? IFS_WS : IFS_WORD;
+	word = (f&DOBLANK) ? IFS_IWS : IFS_WORD;
 
 	memset(&st_head, 0, sizeof(st_head));
 	st = &st_head;
@@ -2457,21 +2457,15 @@ expand(char *cp,	/* input word */
 			}
 			if (c == 0)
 				goto done;
-			if (word != IFS_NWS)
+			/* leading white space keeps IFS_IWS, so that
+			 * " : " with IFS=" :" still makes an empty field
+			 */
+			if (word != IFS_NWS &&
+			    (word != IFS_IWS || !ctype(c, C_IFSWS)))
 				word = ctype(c, C_IFSWS) ? IFS_WS : IFS_NWS;
 		} else {
-			if (type == XSUB) {
-				if (word == IFS_NWS &&
-				    Xlength(ds, dp) == 0) {
-					char *p;
-
-					if ((p = strdup("")) == NULL)
-						internal_errorf("unable "
-						    "to allocate memory");
-					XPput(*wp, p);
-				}
+			if (type == XSUB)
 				type = XSUBMID;
-			}
 
 			/* age tilde_ok info - ~ code tests second bit;
 			 * masking keeps the shift defined, since the bits
