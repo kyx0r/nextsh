@@ -456,6 +456,8 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
 			}
 			continue;
 		} else if (tp->val.f == c_exec) {
+			if (ap[1] != NULL && strcmp(ap[1], "--") == 0)
+				ap++;
 			if (ap[1] == NULL)
 				break;
 			ap++;
