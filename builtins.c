@@ -265,9 +265,14 @@ c_read(char **wp)
 	XString qs;
 	char *qp, *line, *quoted, *val;
 	int i, j, k, len, start, end;
+	int delim = '\n';
 
-	while ((optc = ksh_getopt(wp, &builtin_opt, "prsu,")) != -1)
+	while ((optc = ksh_getopt(wp, &builtin_opt, "d:prsu,")) != -1)
 		switch (optc) {
+		case 'd':
+			/* -d '' is NUL */
+			delim = (unsigned char) builtin_opt.optarg[0];
+			break;
 		case 'p':
 			if ((fd = coproc_getfd(R_OK, &emsg)) < 0) {
 				bi_errorf("-p: %s", emsg);
@@ -339,7 +344,7 @@ c_read(char **wp)
 	Xinit(qs, qp, 128, ATEMP);
 	for (;;) {
 		c = shf_getc(shf);
-		if (c == '\0')
+		if (c == '\0' && delim != '\0')
 			continue;
 		if (c == EOF && shf_error(shf) && shf->errno_ == EINTR) {
 			/* Was the offending signal one that would normally
@@ -377,7 +382,7 @@ c_read(char **wp)
 			if (c != EOF)
 				continue;
 		}
-		if (c == '\n' || c == EOF)
+		if (c == delim || c == EOF)
 			break;
 		if (expand && c == '\\') {
 			expanding = 1;
