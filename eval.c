@@ -2628,8 +2628,10 @@ expand(char *cp,	/* input word */
 						    &ds, &dp_x,
 						    f & DOASNTILDE);
 						if (p) {
-							if (dp != dp_x)
-								word = IFS_WORD;
+							/* as if quoted: an empty
+							 * HOME is still a field
+							 */
+							word = IFS_WORD;
 							dp = dp_x;
 							sp = p;
 							continue;
