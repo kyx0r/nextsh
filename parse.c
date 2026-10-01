@@ -53,6 +53,7 @@ struct lex_state {
 			int ncase;	/* open case .. esac, ) ends a pattern */
 			int needin;	/* case seen, waiting for its in */
 			int inpat;	/* at a case pattern: ( and ) are its */
+			int patstart;	/* no ( or word of the pattern yet */
 			int semi;	/* last token was a ; (;; ends an item) */
 			int cmdpos;	/* at the start of a command */
 			int inword;	/* in the middle of a word */
@@ -559,8 +560,10 @@ yylex(int cf)
 						statep->ls_scsparen.needin = 1;
 					} else if (statep->ls_scsparen.wlen == 4 &&
 					    statep->ls_scsparen.ncase &&
-					    (statep->ls_scsparen.cmdpos ||
-					    statep->ls_scsparen.inpat) &&
+					    /* not in (x|esac) */
+					    (statep->ls_scsparen.inpat ?
+					    statep->ls_scsparen.patstart :
+					    statep->ls_scsparen.cmdpos) &&
 					    !strncmp(statep->ls_scsparen.word,
 					    "esac", 4)) {
 						statep->ls_scsparen.ncase--;
@@ -571,7 +574,9 @@ yylex(int cf)
 					    "in", 2)) {
 						statep->ls_scsparen.needin = 0;
 						statep->ls_scsparen.inpat = 1;
-					}
+						statep->ls_scsparen.patstart = 1;
+					} else if (statep->ls_scsparen.inword)
+						statep->ls_scsparen.patstart = 0;
 					if (statep->ls_scsparen.inword)
 						statep->ls_scsparen.cmdpos = 0;
 					statep->ls_scsparen.inword = 0;
@@ -584,8 +589,10 @@ yylex(int cf)
 					 */
 					if (c == ';') {
 						if (statep->ls_scsparen.semi &&
-						    statep->ls_scsparen.ncase)
+						    statep->ls_scsparen.ncase) {
 							statep->ls_scsparen.inpat = 1;
+							statep->ls_scsparen.patstart = 1;
+						}
 						statep->ls_scsparen.semi =
 						    !statep->ls_scsparen.semi;
 					} else if (c != ' ' && c != '\t')
@@ -611,7 +618,11 @@ yylex(int cf)
 			else if (state == SCSPAREN && c == '(') /*)*/ {
 				if (!statep->ls_scsparen.inpat)
 					statep->ls_scsparen.nparen++;
-				/* else: ( of a case pattern, matched by its ) */
+				else
+					/* ( of a case pattern, matched by
+					 * its )
+					 */
+					statep->ls_scsparen.patstart = 0;
 			} else if (state == SCSPAREN && c == /*(*/ ')') {
 				if (statep->ls_scsparen.inpat)
 					statep->ls_scsparen.inpat = 0;
