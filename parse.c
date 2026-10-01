@@ -1273,7 +1273,8 @@ getsc__(void)
 				source->flags |= s->flags & SF_ALIAS;
 				s = source;
 			} else if (*s->u.tblp->val.s &&
-			    isspace((unsigned char)strchr(s->u.tblp->val.s, 0)[-1])) {
+			    (strchr(s->u.tblp->val.s, 0)[-1] == ' ' ||
+			    strchr(s->u.tblp->val.s, 0)[-1] == '\t')) {
 				source = s = s->next;	/* pop source stack */
 				/* Note that this alias ended with a space,
 				 * enabling alias expansion on the following
