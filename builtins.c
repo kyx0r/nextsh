@@ -1059,6 +1059,11 @@ c_cd(char **wp)
 	cdpath = str_val(global("CDPATH"));
 	do {
 		cdnode = make_path(current_wd, dir, &cdpath, &xs, &phys_path);
+		/* POSIX: if no CDPATH entry leads to a directory, the
+		 * operand is taken as it is, relative to .
+		 */
+		if (cdnode && cdpath == NULL)
+			cdpath = null;
 		if (physical)
 			rval = chdir(try = Xstr(xs) + phys_path);
 		else {
