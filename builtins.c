@@ -478,14 +478,18 @@ c_trap(char **wp)
 
 	if (*wp == NULL) {
 		for (p = sigtraps, i = NSIG+1; --i >= 0; p++) {
-			if (p->trap != NULL) {
+			s = p->trap;
+			if (s == NULL && traps_inherited)
+				s = p->otrap;
+			if (s != NULL) {
 				shprintf("trap -- ");
-				print_value_quoted(p->trap);
+				print_value_quoted(s);
 				shprintf(" %s\n", p->name);
 			}
 		}
 		return 0;
 	}
+	traps_inherited = 0;
 
 	/*
 	 * Use case sensitive lookup for first arg so the

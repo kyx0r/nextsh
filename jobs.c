@@ -1937,10 +1937,16 @@ cleartraps(void)
 	trap = 0;
 	intrsig = 0;
 	fatal_trap = 0;
+	/* trap without operands still lists them, as in $(trap) */
+	traps_inherited = 1;
 	for (i = NSIG+1, p = sigtraps; --i >= 0; p++) {
 		p->set = 0;
-		if ((p->flags & TF_USER_SET) && (p->trap && p->trap[0]))
+		afree(p->otrap, APERM);
+		p->otrap = NULL;
+		if ((p->flags & TF_USER_SET) && (p->trap && p->trap[0])) {
+			p->otrap = str_save(p->trap, APERM);
 			settrap(p, NULL);
+		}
 	}
 }
 
