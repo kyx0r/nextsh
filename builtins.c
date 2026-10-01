@@ -1001,6 +1001,10 @@ c_cd(char **wp)
 	} else if (!wp[1]) {
 		/* One argument: - or dir */
 		dir = wp[0];
+		if (*dir == '\0') {
+			bi_errorf("empty directory");
+			return 1;
+		}
 		if (strcmp(dir, "-") == 0) {
 			dir = str_val(oldpwd_s);
 			if (dir == null) {
