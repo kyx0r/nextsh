@@ -625,14 +625,11 @@ c_brkcont(char **wp)
 			warningf(true, "%s: cannot %s", wp[0], wp[0]);
 			return 0;
 		}
-		/* POSIX says if n is too big, the last enclosing loop
-		 * shall be used.  Doesn't say to print an error but we
-		 * do anyway 'cause the user messed up.
+		/* POSIX: if n is too big, the outermost enclosing loop
+		 * is used, silently
 		 */
 		if (last_ep)
 			last_ep->flags &= ~EF_BRKCONT_PASS;
-		warningf(true, "%s: can only %s %d level(s)",
-		    wp[0], wp[0], n - quit);
 	}
 
 	unwind(*wp[0] == 'b' ? LBREAK : LCONTIN);
