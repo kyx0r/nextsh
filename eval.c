@@ -303,7 +303,8 @@ str_val(struct tbl *vp)
 		if (vp->flag & INT_U)
 			n = (uint64_t) vp->val.i;
 		else
-			n = (vp->val.i < 0) ? -vp->val.i : vp->val.i;
+			n = (vp->val.i < 0) ? -(uint64_t) vp->val.i :
+			    (uint64_t) vp->val.i;
 		base = (vp->type == 0) ? 10 : vp->type;
 		if (base < 2 || base > strlen(digits))
 			base = 10;
@@ -412,7 +413,7 @@ getint(struct tbl *vp, int64_t *nump, bool arith)
 	int c;
 	int base, neg;
 	int have_base = 0;
-	int64_t num;
+	uint64_t num;
 
 	if (vp->flag&SPECIAL)
 		getspec(vp);
@@ -445,9 +446,9 @@ getint(struct tbl *vp, int64_t *nump, bool arith)
 		if (c == '-') {
 			neg++;
 		} else if (c == '#') {
-			base = (int) num;
-			if (have_base || base < 2 || base > 36)
+			if (have_base || num < 2 || num > 36)
 				return -1;
+			base = (int) num;
 			num = 0;
 			have_base = 1;
 		} else if (letnum(c)) {
@@ -467,7 +468,7 @@ getint(struct tbl *vp, int64_t *nump, bool arith)
 	}
 	if (neg)
 		num = -num;
-	*nump = num;
+	*nump = (int64_t) num;
 	return base;
 }
 
@@ -1506,7 +1507,7 @@ evalexpr(Expr_state *es, enum prec prec)
 			else if (op == O_LNOT)
 				vl->val.i = !vl->val.i;
 			else if (op == O_MINUS)
-				vl->val.i = -vl->val.i;
+				vl->val.i = (int64_t) -(uint64_t) vl->val.i;
 			/* op == O_PLUS is a no-op */
 		} else if (op == OPEN_PAREN) {
 			token(es);
@@ -1553,37 +1554,41 @@ evalexpr(Expr_state *es, enum prec prec)
 		switch ((int) op) {
 		case O_TIMES:
 		case O_TIMESASN:
-			res = vl->val.i * vr->val.i;
+			res = (int64_t) ((uint64_t) vl->val.i *
+			    (uint64_t) vr->val.i);
 			break;
 		case O_DIV:
 		case O_DIVASN:
-			if (vl->val.i == LONG_MIN && vr->val.i == -1)
-				res = LONG_MIN;
+			if (vl->val.i == INT64_MIN && vr->val.i == -1)
+				res = INT64_MIN;
 			else
 				res = vl->val.i / vr->val.i;
 			break;
 		case O_MOD:
 		case O_MODASN:
-			if (vl->val.i == LONG_MIN && vr->val.i == -1)
+			if (vl->val.i == INT64_MIN && vr->val.i == -1)
 				res = 0;
 			else
 				res = vl->val.i % vr->val.i;
 			break;
 		case O_PLUS:
 		case O_PLUSASN:
-			res = vl->val.i + vr->val.i;
+			res = (int64_t) ((uint64_t) vl->val.i +
+			    (uint64_t) vr->val.i);
 			break;
 		case O_MINUS:
 		case O_MINUSASN:
-			res = vl->val.i - vr->val.i;
+			res = (int64_t) ((uint64_t) vl->val.i -
+			    (uint64_t) vr->val.i);
 			break;
 		case O_LSHIFT:
 		case O_LSHIFTASN:
-			res = vl->val.i << vr->val.i;
+			res = (int64_t) ((uint64_t) vl->val.i <<
+			    (vr->val.i & 63));
 			break;
 		case O_RSHIFT:
 		case O_RSHIFTASN:
-			res = vl->val.i >> vr->val.i;
+			res = vl->val.i >> (vr->val.i & 63);
 			break;
 		case O_LT:
 			res = vl->val.i < vr->val.i;
@@ -1744,12 +1749,14 @@ static struct tbl *
 do_ppmm(Expr_state *es, enum token op, struct tbl *vasn, bool is_prefix)
 {
 	struct tbl *vl;
-	int oval;
+	int64_t oval;
 
 	assign_check(es, op, vasn);
 
 	vl = intvar(es, vasn);
-	oval = op == O_PLUSPLUS ? vl->val.i++ : vl->val.i--;
+	oval = vl->val.i;
+	vl->val.i = (int64_t) (op == O_PLUSPLUS ?
+	    (uint64_t) oval + 1 : (uint64_t) oval - 1);
 	if (vasn->flag & INTEGER)
 		setint_v(vasn, vl, es->arith);
 	else
