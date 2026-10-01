@@ -2337,6 +2337,9 @@ expand(char *cp,	/* input word */
 			type = XBASE;
 			if (f&DOBLANK) {
 				doblank--;
+				/* but ""$@ is the "" */
+				if (word == IFS_QUOTE && !quote)
+					word = IFS_WORD;
 				if (dp == Xstring(ds, dp) && word != IFS_WORD)
 					word = IFS_IWS;
 			}
