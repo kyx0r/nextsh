@@ -3,7 +3,7 @@
 # Tests the lexer, mostly the parts that scan the raw text of a $(..)
 # body: quoting, here documents, comments and case patterns. Also tests
 # vi-mode UTF-8 redraw, window buffers and completion through a PTY
-# (requires Python 3).
+# (requires script(1)).
 #
 # The shell under test is $SH (./sh by default), the shell running this
 # script can be any POSIX shell.
@@ -14,7 +14,7 @@ FAIL=0
 N=0
 
 TMPFILE=$(mktemp /tmp/nextsh_test_XXXXXX)
-trap 'rm -f "$TMPFILE"' EXIT
+trap 'rm -rf "$TMPFILE" "$TMPFILE.d"' EXIT
 
 # t: run the script on stdin, compare its output with the expected one
 t() {
@@ -402,463 +402,368 @@ terr 'unterminated case' <<'S'
 echo "$(case x in x) echo hi;;)"
 S
 
-# Keep the PTY driver here so ./test.sh is the single test entry point.
-# Python emits one PASS/FAIL record per case; shell counters below include
-# these in the same summary as the non-interactive tests.
 printf '%s\n' '─── Interactive editing and completion ───────────────────────────────────────'
 
-if command -v python3 >/dev/null 2>&1; then
-	python3 - "$SH" > "$TMPFILE" <<'PY_PTY'
-import codecs
-import errno
-import fcntl
-import os
-from pathlib import Path
-import pty
-import select
-import shutil
-import signal
-import struct
-import sys
-import tempfile
-import termios
-import time
-import unittest
+# The interactive tests type into "$SH -i" on a pseudo-terminal made by
+# script(1). The whole input is typed ahead, without waiting for the
+# shell: the terminal is set to raw mode without echo before the shell
+# starts, so the line discipline neither echoes nor interprets anything
+# (^U, ^V, ^R, ...), and the editor, which reads one byte at a time,
+# sees the same bytes as from a typist. No sleeps, so each session takes
+# a few milliseconds.
 
-SHELL = str(Path(sys.argv[1]).resolve())
-work = Path(tempfile.mkdtemp(prefix='nextsh-vi-tests-'))
-base_env = dict(os.environ, ENV='/dev/null', HOME=str(work),
-                HISTFILE='/dev/null', TERM='xterm', LC_ALL='C.UTF-8',
-                ASAN_OPTIONS=os.environ.get('ASAN_OPTIONS',
-                                            'detect_leaks=0:halt_on_error=1'),
-                UBSAN_OPTIONS=os.environ.get('UBSAN_OPTIONS',
-                                             'halt_on_error=1:print_stacktrace=1'))
-
-# These screen assertions use single-column Unicode characters: the
-# editor currently counts each non-ASCII character as one display column.
-class Terminal:
-    def __init__(self, width=24):
-        self.width = width
-        self.row = [' '] * width
-        self.col = 0
-        self.escape = ''
-        self.decode = codecs.getincrementaldecoder('utf-8')('strict')
-        self.pid, self.fd = pty.fork()
-        if self.pid == 0:
-            env = dict(base_env, PS1='> ', PS2='+ ', COLUMNS=str(width))
-            fcntl.ioctl(0, termios.TIOCSWINSZ,
-                        struct.pack('HHHH', 24, width, 0, 0))
-            os.execve(SHELL, [SHELL, '-i'], env)
-        try:
-            self.read()
-            self.send(b'set -o vi\n')
-        except BaseException:
-            self.close()
-            raise
-
-    def read(self):
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline:
-            if not select.select([self.fd], [], [], 0.08)[0]:
-                return
-            data = os.read(self.fd, 65536)
-            for ch in self.decode.decode(data):
-                if self.escape:
-                    self.escape += ch
-                    if self.escape == '\x1b[':
-                        continue
-                    if ch.isalpha():
-                        if ch == 'H':
-                            self.col = 0
-                        elif ch in 'JK':
-                            self.row = [' '] * self.width
-                        else:
-                            raise AssertionError('unexpected escape ' + repr(self.escape))
-                        self.escape = ''
-                    continue
-                if ch == '\x1b':
-                    self.escape = ch
-                elif ch == '\r':
-                    self.col = 0
-                elif ch == '\n':
-                    self.row = [' '] * self.width
-                elif ch == '\b':
-                    self.col = max(0, self.col - 1)
-                elif ch == '\a':
-                    pass
-                else:
-                    if self.col < self.width:
-                        self.row[self.col] = ch
-                    self.col += 1
-
-    def send(self, data):
-        os.write(self.fd, data.encode() if isinstance(data, str) else data)
-        self.read()
-
-    def close(self):
-        os.kill(self.pid, signal.SIGKILL)
-        os.waitpid(self.pid, 0)
-        os.close(self.fd)
-
-
-class ViUTF8(unittest.TestCase):
-    def setUp(self):
-        self.t = Terminal()
-
-    def tearDown(self):
-        self.t.close()
-
-    def check(self, text, cursor, marker=' '):
-        self.assertEqual(''.join(self.t.row[:len(text) + 2]), '> ' + text)
-        self.assertEqual(self.t.col, cursor + 2)
-        self.assertEqual(''.join(self.t.row[len(text) + 2:self.t.width - 2]),
-                         ' ' * max(0, self.t.width - len(text) - 4))
-        self.assertEqual(self.t.row[self.t.width - 2], marker)
-
-    def test_insert_move_delete_and_redraw(self):
-        self.t.send('aé€𝄞z')
-        self.check('aé€𝄞z', 5)
-        self.t.send(b'\x1bhh')
-        self.check('aé€𝄞z', 2)
-        self.t.send(b'x')
-        self.check('aé𝄞z', 2)
-        self.t.send(b'iX\x1b')
-        self.check('aéX𝄞z', 2)
-        self.t.send(b'\x0c')
-        self.check('aéX𝄞z', 2)
-
-    def test_different_utf8_lengths_and_shared_prefix(self):
-        self.t.send('éê€𝄞abc')
-        self.t.send(b'\x1b0x')
-        self.check('ê€𝄞abc', 0)
-        self.t.send(b'x')
-        self.check('€𝄞abc', 0)
-        self.t.send(b'iZ\x1b')
-        self.check('Z€𝄞abc', 0)
-        self.t.send(b'lx')
-        self.check('Z𝄞abc', 1)
-
-    def test_fragmented_input(self):
-        for ch in 'é€𝄞':
-            for byte in ch.encode():
-                self.t.send(bytes([byte]))
-        self.check('é€𝄞', 3)
-        self.t.send(b'\x7f')
-        self.check('é€', 2)
-        self.t.send(b'\x1b0i')
-        for byte in 'ê'.encode():
-            self.t.send(bytes([byte]))
-        self.check('êé€', 1)
-        self.t.send(b'\x1bl')
-        self.check('êé€', 1)
-
-    def test_right_margin_and_scrolling(self):
-        # winwidth = 24 - 2 (prompt) - 3 = 19; a command-mode
-        # character in its last column must include all its bytes.
-        self.t.send('a' * 18)
-        self.t.send(b'\x1b')
-        self.t.send('a€')
-        self.t.send(b'\x1b0$')
-        self.check('a' * 18 + '€', 18)
-        self.t.send(b'\x0c')
-        self.check('a' * 18 + '€', 18)
-        self.t.send('Aê𝄞xyz')
-        self.assertEqual(self.t.row[self.t.width - 2], '<')
-        self.t.send(b'\x1b0')
-        self.check('a' * 18 + '€', 0, '>')
-
-    def test_history_search_ending_on_utf8(self):
-        self.t.send(': abcé\n')
-        self.t.send(b'\x1b\x12abc\x1b')
-        # Search recall and subsequent end-of-line motion must land on
-        # the leading byte of the final character, never its continuation.
-        self.t.send(b'$')
-        self.check(': abcé', 5)
-        self.t.send(b'x')
-        self.check(': abc', 4)
-
-    def test_show8_and_ascii_controls(self):
-        self.t.send('set -o vi-show8\n')
-        self.t.send('é')
-        self.check('M-CM-)', 6)
-        self.t.send(b'\x15abc\x16\x01')
-        self.check('abc^A', 5)
-        self.t.send(b'\x1b0x')
-        self.check('bc^A', 0)
-
-
-def case(name, payload, width=80, prompt='P> ', show8=False):
-    pid, fd = pty.fork()
-    if pid == 0:
-        fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack('HHHH', 24, width, 0, 0))
-        env = dict(base_env, PS1=prompt, COLUMNS=str(width))
-        args = [SHELL, '-o', 'vi']
-        if show8:
-            args += ['-o', 'vi-show8']
-        os.execve(SHELL, args + ['-i'], env)
-    output = bytearray()
-    eof = False
-
-    def drain(seconds):
-        nonlocal eof
-        deadline = time.monotonic() + seconds
-        while not eof and time.monotonic() < deadline:
-            if not select.select([fd], [], [], max(0, deadline-time.monotonic()))[0]:
-                break
-            try:
-                data = os.read(fd, 65536)
-            except OSError:
-                data = b''
-            if not data:
-                eof = True
-            output.extend(data)
-
-    def send(data):
-        for start in range(0, len(data), 64):
-            if eof:
-                return
-            chunk = data[start:start+64]
-            while chunk:
-                try:
-                    count = os.write(fd, chunk)
-                except OSError:
-                    return
-                chunk = chunk[count:]
-            drain(.01)
-        drain(.15)
-
-    done = 0
-    try:
-        drain(.3)
-        send(b': ' + payload)
-        # Enter command mode, move both ways, delete/undo, and redraw.
-        send(b'\x1b0$xu\x0c\n')
-        send(b'printf "VERIFIED:%s\\n" done\n')
-        send(b'exit\n')
-        deadline = time.monotonic() + 5
-        done, status = os.waitpid(pid, os.WNOHANG)
-        while not done and time.monotonic() < deadline:
-            drain(.1)
-            if eof:
-                time.sleep(.01)
-            done, status = os.waitpid(pid, os.WNOHANG)
-        if not done:
-            os.kill(pid, signal.SIGKILL)
-            done, status = os.waitpid(pid, 0)
-        drain(.1)
-    finally:
-        if not done:
-            os.kill(pid, signal.SIGKILL)
-            os.waitpid(pid, 0)
-        os.close(fd)
-    ok = (os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
-          and b'VERIFIED:done\r\n' in output
-          and b'runtime error:' not in output
-          and b'AddressSanitizer' not in output)
-    print(('PASS ' if ok else 'FAIL ') + 'vi window: ' + name, flush=True)
-    if not ok:
-        (work / (name + '.log')).write_bytes(output)
-    return ok
-
-
-class ShellResult(unittest.TestResult):
-    def report(self, test, ok):
-        name = test._testMethodName[len('test_'):].replace('_', ' ')
-        print(('PASS ' if ok else 'FAIL ') + 'vi UTF-8: ' + name, flush=True)
-
-    def addSuccess(self, test):
-        super().addSuccess(test)
-        self.report(test, True)
-
-    def addFailure(self, test, error):
-        super().addFailure(test, error)
-        self.report(test, False)
-        print(self.failures[-1][1], file=sys.stderr)
-
-    def addError(self, test, error):
-        super().addError(test, error)
-        self.report(test, False)
-        print(self.errors[-1][1], file=sys.stderr)
-
-
-class CompletionSession:
-    def __init__(self, directory):
-        self.pid, self.fd = pty.fork()
-        if self.pid == 0:
-            try:
-                os.chdir(directory)
-                fcntl.ioctl(0, termios.TIOCSWINSZ,
-                            struct.pack('HHHH', 24, 200, 0, 0))
-                env = base_env.copy()
-                env.update(HOME=directory, ENV='/dev/null', HISTFILE='/dev/null',
-                           PS1='NEXTSH> ', PS2='MORE> ', TERM='xterm',
-                           LC_ALL='C.UTF-8')
-                env.setdefault('ASAN_OPTIONS', 'detect_leaks=0:abort_on_error=1')
-                env.setdefault('UBSAN_OPTIONS', 'halt_on_error=1:print_stacktrace=1')
-                os.execve(SHELL, [SHELL, '-i'], env)
-            except BaseException:
-                os._exit(127)
-        self.log = b''
-
-    def read(self, prompt=False):
-        data = b''
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            if select.select([self.fd], [], [], .05)[0]:
-                try:
-                    chunk = os.read(self.fd, 65536)
-                except OSError as error:
-                    if error.errno != errno.EIO:
-                        raise
-                    chunk = b''
-                if not chunk:
-                    raise AssertionError('shell exited unexpectedly')
-                data += chunk
-                self.log += chunk
-            elif data and (not prompt or data.endswith(b'NEXTSH> ')):
-                return data
-        raise AssertionError('timed out waiting for ' + ('prompt' if prompt else 'completion'))
-
-    def send(self, data, prompt=False):
-        os.write(self.fd, data)
-        return self.read(prompt)
-
-    def close(self):
-        try:
-            os.kill(self.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        os.waitpid(self.pid, 0)
-        os.close(self.fd)
-
-
-def completion_case(mode, ifs, kind, name=None):
-    label = '%s / IFS %s / %s' % (mode, ifs, kind)
-    if name is not None:
-        label += ' / ' + repr(name)
-    session = None
-    ok = False
-    with tempfile.TemporaryDirectory(prefix='completion-', dir=str(work)) as directory:
-        try:
-            if kind == 'unique':
-                target = name
-                os.mkdir(os.path.join(directory, target))
-                command = b'cd case\t'
-            elif kind == 'nested':
-                target = 'case café space/子 😀 folder'
-                os.makedirs(os.path.join(directory, target))
-                command = b'cd case\t'
-            else:
-                target = 'case café common-a'
-                os.mkdir(os.path.join(directory, target))
-                os.mkdir(os.path.join(directory, 'case café common-b'))
-                command = b'cd case\t'
-            session = CompletionSession(directory)
-            session.read(prompt=True)
-            session.send(('set -o %s\n' % mode).encode(), prompt=True)
-            setting = {'default': ':', 'colon': 'IFS=:', 'empty': "IFS=''",
-                       'unset': 'unset IFS', 'newline': "IFS='\n'"}[ifs]
-            session.send((setting + '\n').encode(), prompt=True)
-            screen = session.send(command)
-            if name is None or ' ' in name:
-                assert b'\\ ' in screen, 'completion did not escape spaces'
-            # Tabs are expanded for terminal display; execution below checks
-            # that the completed tab remains part of the directory argument.
-            if kind == 'nested':
-                session.send('子\t'.encode())
-            elif kind == 'common-prefix':
-                session.send(b'a\t')
-            session.send(b'\n', prompt=True)
-            # Check the executed argument, not merely what the terminal echoed.
-            result = os.path.join(directory, 'result')
-            session.send(('printf \'%s\\n\' "$PWD" > "' + result +
-                          '"\n').encode(), prompt=True)
-            with open(result, 'rb') as output:
-                actual = output.read()
-            expected = (os.path.join(directory, target) + '\n').encode()
-            assert actual == expected, 'cd reached %r, expected %r' % (actual, expected)
-            assert not any(report in session.log for report in
-                           (b'AddressSanitizer', b'UndefinedBehaviorSanitizer',
-                            b'runtime error:')), 'sanitizer report'
-            ok = True
-            print('PASS completion: ' + label, flush=True)
-        except Exception as error:
-            print('FAIL completion: ' + label, flush=True)
-            print(label + ': ' + str(error), file=sys.stderr)
-            if session is not None:
-                log = work / ('completion-%s-%s-%s.log' % (mode, ifs,
-                              kind if name is None else names.index(name)))
-                log.write_bytes(session.log)
-                print('  PTY log:', log, file=sys.stderr)
-        finally:
-            if session is not None:
-                session.close()
-    return ok
-
-
-utf8_result = ShellResult()
-unittest.defaultTestLoader.loadTestsFromTestCase(ViUTF8).run(utf8_result)
-
-names = ['case ascii space', 'case café space', 'case 子 folder',
-         'case 😀 folder', 'case é子😀 two spaces', 'case space before é',
-         'case é $cash;[x]', 'case é\ttab']
-completion_results = []
-for mode in ('vi', 'emacs'):
-    for ifs in ('default', 'colon', 'empty', 'unset', 'newline'):
-        for name in names:
-            completion_results.append(completion_case(mode, ifs, 'unique', name))
-        completion_results.append(completion_case(mode, ifs, 'nested'))
-        completion_results.append(completion_case(mode, ifs, 'common-prefix'))
-
-payloads = [
-    ('ascii', b'a' * 300),
-    ('utf2', ('é' * 200).encode()),
-    ('utf3', ('界' * 200).encode()),
-    ('utf4', ('😀' * 200).encode()),
-    ('continuations', b'\x80' * 4093),  # LINE - 1, including ': '
-    ('truncated', b'\xe2\x82' * 1500),
-    ('mixed', ('abcé界😀' * 150).encode()),
-]
-results = []
-for width in (12, 20, 80, 132, 256):
-    for name, payload in payloads:
-        results.append(case(name + '-w' + str(width), payload, width))
-results.append(case('empty-prompt', b'a' * 300, prompt=''))
-results.append(case('long-prompt', ('界é😀' * 200).encode(), prompt='prompt' * 40))
-results.append(case('show8', b'\x80\xff' * 1500, show8=True))
-ok = (utf8_result.wasSuccessful() and all(results)
-      and all(completion_results))
-if ok:
-    shutil.rmtree(work)
-else:
-    print('PTY failure logs:', work, file=sys.stderr)
-sys.exit(0 if ok else 1)
-PY_PTY
-	pty_status=$?
-	pty_fail=0
-	while read -r result name; do
-		N=$((N + 1))
-		printf 'Test %d: "%s"\n' "$N" "$name"
-		case $result in
-		PASS) PASS=$((PASS + 1)) ;;
-		*)
-			FAIL=$((FAIL + 1))
-			pty_fail=$((pty_fail + 1))
-			printf 'FAIL\n'
-			;;
-		esac
-	done < "$TMPFILE"
-	# A missing module, exec failure, or other driver error must not be
-	# mistaken for success just because it produced no failure records.
-	if [ "$pty_status" -ne 0 ] && [ "$pty_fail" -eq 0 ]; then
-		N=$((N + 1))
-		FAIL=$((FAIL + 1))
-		printf 'Test %d: "PTY test driver"\nFAIL (exit %d)\n' "$N" "$pty_status"
-	fi
-else
+# pass name, fail name reason: record the result of an interactive test;
+# a failure keeps what the shell wrote to the terminal as a log
+pass() {
+	N=$((N + 1))
+	PASS=$((PASS + 1))
+	printf 'Test %d: "%s"\n' "$N" "$1"
+}
+fail() {
 	N=$((N + 1))
 	FAIL=$((FAIL + 1))
-	printf 'Test %d: "PTY test driver"\nFAIL (Python 3 is required)\n' "$N"
+	cp "$OUT" "$TMPFILE.$N.log"
+	printf 'Test %d: "%s"\nFAIL\n  %s\n  PTY log: %s\n' \
+		"$N" "$1" "$2" "$TMPFILE.$N.log"
+}
+
+# Run in the pseudo-terminal: make it raw and W columns wide, tell the
+# typist (waiting on the fifo F) to start, then start the shell.
+PTYCMD='stty rows 24 cols "$W" -echo -icanon -isig -ixon -iexten min 1 time 0
+echo > "$F"
+PS1=$P PS2="+ " exec "$SH" $A -i'
+
+if ! command -v script >/dev/null 2>&1; then
+	PTY=
+elif script -V 2>/dev/null | grep util-linux >/dev/null; then
+	PTY=util-linux
+	runpty() { exec script -qec "$PTYCMD" /dev/null; }
+else
+	PTY=bsd
+	runpty() { exec script -q /dev/null /bin/sh -c "$PTYCMD"; }
+fi
+
+# pty width prompt dir [args]: type the file $IN into "$SH args -i" run
+# in dir on a pseudo-terminal of the given width, saving what the shell
+# writes to the terminal in $OUT. Returns the shell's exit status; a
+# shell still running after 10 seconds is killed, returning 124.
+#
+# The typist waits on the fifo $RDY for the terminal to be set up, and
+# keeps script's input open until script exits: on end of input script
+# waits up to 2 seconds for the shell to read everything.
+pty() {
+	pw=$1 pp=$2 pd=$3
+	shift 3
+	{ read -r _ < "$RDY"; cat "$IN"; read -r _ < "$RDY"; } > "$TTY" 2>/dev/null &
+	typist=$!
+	(
+		cd "$pd" || exit 1
+		W=$pw P=$pp F=$RDY A="$*" SHELL=/bin/sh HOME=$pd COLUMNS=$pw
+		ENV=/dev/null HISTFILE=/dev/null TERM=xterm LC_ALL=C.UTF-8
+		export SH W P F A SHELL HOME COLUMNS ENV HISTFILE TERM LC_ALL
+		runpty
+	) < "$TTY" > "$OUT" 2>&1 &
+	pid=$!
+	{
+		trap 'kill "$s"; exit' TERM
+		sleep 10 & s=$!
+		wait "$s" && : > "$PTYDIR/timeout" && kill -9 "$pid"
+	} > /dev/null 2>&1 &
+	dog=$!
+	wait "$pid" 2>/dev/null
+	st=$?
+	kill "$typist" "$dog" 2>/dev/null
+	wait "$typist" "$dog" 2>/dev/null
+	[ ! -e "$PTYDIR/timeout" ] || { rm -f "$PTYDIR/timeout"; st=124; }
+	return "$st"
+}
+
+# sanitized: a sanitizer reported an error in $OUT
+sanitized() {
+	LC_ALL=C grep -e 'runtime error:' -e AddressSanitizer \
+		-e UndefinedBehaviorSanitizer "$OUT" >/dev/null
+}
+
+# A single line terminal, as wide as $W, emulated over $OUT up to the
+# last ^C (typed to end the session). Each UTF-8 character takes one
+# column, as the editor assumes. Checks that the row is "> $T" followed
+# by blanks with the cursor on character $C of $T (or skips that check
+# when $C is empty), and that the window marker is $M.
+SCREEN='
+BEGIN {
+	for (i = 128; i < 192; i++)
+		cont = cont sprintf("%c", i)
+	w = ENVIRON["W"] + 0
+	for (i = 0; i < w; i++)
+		row[i] = " "
+}
+{ buf = buf (NR > 1 ? "\n" : "") $0 }
+function clear(	i) { for (i = 0; i < w; i++) row[i] = " " }
+END {
+	for (p = 0; (i = index(substr(buf, p + 1), "^C")) > 0; p += i)
+		;
+	if (!p)
+		bad = " (no ^C)"
+	n = p - 1
+	col = 0
+	last = -1
+	for (k = 1; k <= n; k++) {
+		c = substr(buf, k, 1)
+		if (esc != "") {
+			esc = esc c
+			if (esc != "\033[" && c ~ /[A-Za-z]/) {
+				if (c == "H")
+					col = 0
+				else if (c == "J" || c == "K")
+					clear()
+				else
+					bad = bad " (unexpected escape ^[" substr(esc, 2) ")"
+				esc = ""
+			}
+			continue
+		}
+		if (index(cont, c) && last >= 0) {
+			row[last] = row[last] c
+			continue
+		}
+		last = -1
+		if (c == "\033")
+			esc = c
+		else if (c == "\r")
+			col = 0
+		else if (c == "\n")
+			clear()
+		else if (c == "\b")
+			col -= col > 0
+		else if (c != "\007") {
+			if (col < w)
+				row[last = col] = c
+			col++
+		}
+	}
+	t = "> " ENVIRON["T"]
+	nt = 0
+	for (k = 1; k <= length(t); k++) {
+		c = substr(t, k, 1)
+		if (index(cont, c) && nt)
+			e[nt - 1] = e[nt - 1] c
+		else
+			e[nt++] = c
+	}
+	ok = bad == ""
+	if (ENVIRON["C"] != "") {
+		for (i = 0; i < w - 2; i++)
+			if (row[i] != (i < nt ? e[i] : " "))
+				ok = 0
+		if (col != ENVIRON["C"] + 2)
+			ok = 0
+	}
+	if (row[w - 2] != ENVIRON["M"])
+		ok = 0
+	if (!ok) {
+		s = ""
+		for (i = 0; i < w; i++)
+			s = s row[i]
+		printf "screen |%s| cursor %d%s\n", s, col, bad
+	}
+	exit !ok
+}'
+
+# vi_start name: start a vi UTF-8 test on a 24 column terminal
+# vt keys text cursor [marker]: type keys (a printf format) after those
+# typed so far, then check that the screen shows text with the cursor on
+# its character cursor (any text and cursor when both are empty) and the
+# window marker (blank by default). Every check is a new session that
+# types all the keys and ends with ^C.
+vi_start() {
+	vname=$1 vkeys= vstep=0
+}
+vt() {
+	vkeys=$vkeys$1 vstep=$((vstep + 1))
+	printf "$vkeys\\003exit\\n" > "$IN"
+	pty 24 '> ' "$PTYDIR" -o vi
+	if [ $? -eq 124 ]; then
+		fail "vi UTF-8: $vname ($vstep)" 'timed out'
+	elif res=$(W=24 T=$2 C=$3 M=${4:- } LC_ALL=C awk "$SCREEN" "$OUT") &&
+	    ! sanitized; then
+		pass "vi UTF-8: $vname ($vstep)"
+	else
+		fail "vi UTF-8: $vname ($vstep)" "${res:-sanitizer report}"
+	fi
+}
+
+# win name width prompt payload [args]: type the payload file in a long
+# line in vi mode, move both ways, delete and undo, redraw, then run it;
+# the shell must survive and still run commands
+win() {
+	wname=$1 wwidth=$2 wprompt=$3 wpay=$4
+	shift 4
+	{
+		printf ': '
+		cat "$wpay"
+		printf '\0330$xu\014\nprintf "VERIFIED:%%s\\n" done\nexit\n'
+	} > "$IN"
+	pty "$wwidth" "$wprompt" "$PTYDIR" -o vi "$@"
+	st=$?
+	if [ "$st" -ne 0 ]; then
+		fail "vi window: $wname" "exit status $st"
+	elif ! LC_ALL=C grep "VERIFIED:done$CR\$" "$OUT" >/dev/null; then
+		fail "vi window: $wname" 'no VERIFIED:done'
+	elif sanitized; then
+		fail "vi window: $wname" 'sanitizer report'
+	else
+		pass "vi window: $wname"
+	fi
+}
+
+# comp mode ifs kind [name]: in mode with IFS set as named by ifs, cd into
+# the directory name (kind unique), a nested directory (kind nested) or
+# one of two directories with a common prefix (kind common-prefix) using
+# completion; the shell must have escaped the spaces and reached it
+comp() {
+	cmode=$1 cifs=$2 ckind=$3 cname=$4
+	cdir=$PTYDIR/c$N
+	mkdir "$cdir"
+	case $ckind in
+	unique)
+		ctarget=$cname more=
+		mkdir "$cdir/$ctarget"
+		;;
+	nested)
+		ctarget='case café space/子 😀 folder' more='子\t'
+		mkdir -p "$cdir/$ctarget"
+		;;
+	*)
+		ctarget='case café common-a' more='a\t'
+		mkdir "$cdir/$ctarget" "$cdir/case café common-b"
+		;;
+	esac
+	case $cifs in
+	default) cset=: ;;
+	colon) cset=IFS=: ;;
+	empty) cset="IFS=''" ;;
+	unset) cset='unset IFS' ;;
+	newline) cset="IFS='$NL'" ;;
+	esac
+	{
+		printf 'set -o %s\n%s\ncd case\t' "$cmode" "$cset"
+		printf "$more"
+		printf '\nprintf %s "$PWD" > %s/result\nexit\n' "'%s\\n'" "$cdir"
+	} > "$IN"
+	clabel="completion: $cmode / IFS $cifs / $ckind${cname:+ / $cname}"
+	pty 200 'NEXTSH> ' "$cdir"
+	st=$?
+	if [ "$st" -ne 0 ]; then
+		fail "$clabel" "exit status $st"
+	elif ! printf '%s\n' "$cdir/$ctarget" | cmp -s - "$cdir/result"; then
+		fail "$clabel" "cd reached $(cat "$cdir/result" 2>/dev/null)"
+	elif ! grep -F '\ ' "$OUT" >/dev/null; then
+		fail "$clabel" 'completion did not escape spaces'
+	elif sanitized; then
+		fail "$clabel" 'sanitizer report'
+	else
+		pass "$clabel"
+	fi
+}
+
+# rep string count: string repeated count times
+rep() {
+	printf "%$2s" '' | LC_ALL=C sed "s/ /$1/g"
+}
+
+if [ -z "$PTY" ] || ! command -v mkfifo >/dev/null 2>&1; then
+	N=$((N + 1))
+	FAIL=$((FAIL + 1))
+	printf 'Test %d: "PTY test driver"\nFAIL (script(1) and mkfifo are required)\n' "$N"
+else
+	case $SH in
+	*/*) SH=$(cd "${SH%/*}" && pwd)/${SH##*/} ;;
+	esac
+	: "${ASAN_OPTIONS=detect_leaks=0:halt_on_error=1}"
+	: "${UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1}"
+	export ASAN_OPTIONS UBSAN_OPTIONS
+	PTYDIR=$TMPFILE.d
+	mkdir "$PTYDIR"
+	RDY=$PTYDIR/rdy TTY=$PTYDIR/tty IN=$PTYDIR/in OUT=$PTYDIR/out
+	mkfifo "$RDY" "$TTY"
+	CR=$(printf '\r')
+	NL='
+'
+	TAB=$(printf '\t')
+
+	vi_start 'insert move delete and redraw'
+	vt 'aé€𝄞z'		'aé€𝄞z' 5
+	vt '\033hh'		'aé€𝄞z' 2
+	vt 'x'			'aé𝄞z' 2
+	vt 'iX\033'		'aéX𝄞z' 2
+	vt '\014'		'aéX𝄞z' 2
+
+	vi_start 'different UTF-8 lengths and shared prefix'
+	vt 'éê€𝄞abc\0330x'	'ê€𝄞abc' 0
+	vt 'x'			'€𝄞abc' 0
+	vt 'iZ\033'		'Z€𝄞abc' 0
+	vt 'lx'			'Z𝄞abc' 1
+
+	# The bytes of a character arrive one by one, as the editor
+	# always reads them.
+	vi_start 'fragmented input'
+	vt 'é€𝄞'		'é€𝄞' 3
+	vt '\177'		'é€' 2
+	vt '\0330iê'		'êé€' 1
+	vt '\033l'		'êé€' 1
+
+	# winwidth = 24 - 2 (prompt) - 3 = 19; a command-mode character
+	# in its last column must include all its bytes.
+	vi_start 'right margin and scrolling'
+	a18=aaaaaaaaaaaaaaaaaa
+	vt "$a18\\033a€\\0330\$"	"$a18€" 18
+	vt '\014'		"$a18€" 18
+	vt 'Aê𝄞xyz'		'' '' '<'
+	vt '\0330'		"$a18€" 0 '>'
+
+	# Search recall and subsequent end-of-line motion must land on the
+	# leading byte of the final character, never its continuation.
+	vi_start 'history search ending on UTF-8'
+	vt ': abcé\n\033\022abc\033$'	': abcé' 5
+	vt 'x'			': abc' 4
+
+	vi_start 'show8 and ASCII controls'
+	vt 'set -o vi-show8\né'	'M-CM-)' 6
+	vt '\025abc\026\001'	'abc^A' 5
+	vt '\0330x'		'bc^A' 0
+
+	set -- 'case ascii space' 'case café space' 'case 子 folder' \
+		'case 😀 folder' 'case é子😀 two spaces' 'case space before é' \
+		'case é $cash;[x]' "case é${TAB}tab"
+	for mode in vi emacs; do
+		for ifs in default colon empty unset newline; do
+			for name do
+				comp "$mode" "$ifs" unique "$name"
+			done
+			comp "$mode" "$ifs" nested
+			comp "$mode" "$ifs" common-prefix
+		done
+	done
+
+	P=$PTYDIR/p
+	rep a 300 > "$P.ascii"
+	rep é 200 > "$P.utf2"
+	rep 界 200 > "$P.utf3"
+	rep 😀 200 > "$P.utf4"
+	rep "$(printf '\200')" 4093 > "$P.continuations"  # LINE - 1 with ': '
+	rep "$(printf '\342\202')" 1500 > "$P.truncated"
+	rep 'abcé界😀' 150 > "$P.mixed"
+	rep '界é😀' 200 > "$P.long-prompt"
+	rep "$(printf '\200\377')" 1500 > "$P.show8"
+	for width in 12 20 80 132 256; do
+		for pay in ascii utf2 utf3 utf4 continuations truncated mixed; do
+			win "$pay-w$width" "$width" 'P> ' "$P.$pay"
+		done
+	done
+	win empty-prompt 80 '' "$P.ascii"
+	win long-prompt 80 "$(rep prompt 40)" "$P.long-prompt"
+	win show8 80 'P> ' "$P.show8" -o vi-show8
+	rm -rf "$PTYDIR"
 fi
 
 printf '\n%s\n' '─── Summary ──────────────────────────────────────────────────────────────────'
