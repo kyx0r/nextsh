@@ -2098,7 +2098,6 @@ expand(char *cp,	/* input word */
 					*dp++ = ')'; *dp++ = ')';
 				} else {
 					struct tbl v;
-					char *p;
 
 					v.flag = DEFINED|ISSET|INTEGER;
 					v.type = 10; /* not default */
@@ -2106,10 +2105,16 @@ expand(char *cp,	/* input word */
 					v_evaluate(&v, substitute(sp, 0),
 					    KSH_UNWIND_ERROR, true);
 					sp = strchr(sp, 0) + 1;
-					for (p = str_val(&v); *p; ) {
-						Xcheck(ds, dp);
-						*dp++ = *p++;
-					}
+					/* the result is field split (and a -
+					 * may make a range in a pattern) like
+					 * that of $var
+					 */
+					x.str = str_save(str_val(&v), ATEMP);
+					type = XSUB;
+					if (f&DOBLANK)
+						doblank++;
+					if (word == IFS_QUOTE)
+						word = IFS_WORD;
 				}
 				continue;
 			case OSUBST: /* ${{#}var{:}[=+-?#%]word} */
