@@ -3156,11 +3156,15 @@ static struct tbl *
 varcpy(struct tbl *vp)
 {
 	struct tbl *cpy;
+	size_t len;
 
 	if (vp == NULL || (vp->flag & RDONLY) == 0)
 		return vp;
 
-	cpy = alloc(sizeof(struct tbl), ATEMP);
-	memcpy(cpy, vp, sizeof(struct tbl));
+	/* entries are allocated to fit the name, see ktenter() */
+	len = offsetof(struct tbl, name[0]) + strlen(vp->name) + 1;
+	cpy = alloc(len < sizeof(struct tbl) ? sizeof(struct tbl) : len,
+	    ATEMP);
+	memcpy(cpy, vp, len);
 	return cpy;
 }
