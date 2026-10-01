@@ -2305,13 +2305,7 @@ c_getopts(char **wp)
 		buf[1] = '\0';
 	}
 
-	/* at&t ksh does not change OPTIND if it was an unknown option.
-	 * Scripts counting on this are prone to break... (ie, don't count
-	 * on this staying).
-	 */
-	if (optc != '?') {
-		user_opt.uoptind = user_opt.optind;
-	}
+	user_opt.uoptind = user_opt.optind;
 
 	voptarg = global("OPTARG");
 	voptarg->flag &= ~RDONLY;	/* at&t ksh clears ro and int */
