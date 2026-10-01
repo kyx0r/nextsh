@@ -1350,6 +1350,7 @@ static void	   evalerr(Expr_state *, enum error_type, const char *)
 		    __attribute__((__noreturn__));
 static struct tbl *evalexpr(Expr_state *, enum prec);
 static void	   token(Expr_state *);
+static void	   noassign_on(Expr_state *);
 static struct tbl *do_ppmm(Expr_state *, enum token, struct tbl *, bool);
 static void	   assign_check(Expr_state *, enum token, struct tbl *);
 static struct tbl *tempvar(void);
@@ -1623,7 +1624,7 @@ evalexpr(Expr_state *es, enum prec prec)
 			break;
 		case O_LAND:
 			if (!vl->val.i)
-				es->noassign++;
+				noassign_on(es);
 			vr = intvar(es, evalexpr(es, ((int) prec) - 1));
 			res = vl->val.i && vr->val.i;
 			if (!vl->val.i)
@@ -1631,7 +1632,7 @@ evalexpr(Expr_state *es, enum prec prec)
 			break;
 		case O_LOR:
 			if (vl->val.i)
-				es->noassign++;
+				noassign_on(es);
 			vr = intvar(es, evalexpr(es, ((int) prec) - 1));
 			res = vl->val.i || vr->val.i;
 			if (vl->val.i)
@@ -1642,7 +1643,7 @@ evalexpr(Expr_state *es, enum prec prec)
 				int e = vl->val.i != 0;
 
 				if (!e)
-					es->noassign++;
+					noassign_on(es);
 				vl = evalexpr(es, MAX_PREC);
 				if (!e)
 					es->noassign--;
@@ -1650,7 +1651,7 @@ evalexpr(Expr_state *es, enum prec prec)
 					evalerr(es, ET_STR, "missing :");
 				token(es);
 				if (e)
-					es->noassign++;
+					noassign_on(es);
 				vr = evalexpr(es, P_TERN);
 				if (e)
 					es->noassign--;
@@ -1675,6 +1676,20 @@ evalexpr(Expr_state *es, enum prec prec)
 			vl->val.i = res;
 	}
 	return vl;
+}
+
+/* Stop assigning, for the operand not evaluated by && || ?:.  The
+ * variable already read as the next token is swapped for a temporary,
+ * or rw++ in 0 && rw++ would still change it.
+ */
+static void
+noassign_on(Expr_state *es)
+{
+	es->noassign++;
+	if (es->tok == VAR) {
+		es->val = tempvar();
+		es->val->flag |= EXPRLVALUE;
+	}
 }
 
 static void
