@@ -48,8 +48,11 @@ pid_t	procpid;
 uid_t	ksheuid;
 int	exstat;
 int	trap_exstat = -1;
+int	builtin_xerrok;
+int	shell_xerrok;
 int	traps_inherited;
 int	subst_exstat;
+int	subst_done;
 const char *safe_prompt;
 int	disable_subst;
 
@@ -535,7 +538,12 @@ shell(Source *volatile s, volatile int toplevel)
 	volatile int attempts = 13;
 	volatile int interactive = Flag(FTALKING) && toplevel;
 	Source *volatile old_source = source;
+	volatile int ran = 0;
+	/* eval and . in an if condition, etc. */
+	volatile int xflags = shell_xerrok ? XERROK : 0;
 	int i;
+
+	shell_xerrok = 0;
 
 	newenv(E_PARSE);
 	if (interactive)
@@ -621,8 +629,10 @@ shell(Source *volatile s, volatile int toplevel)
 			}
 		}
 
-		if (t && (!Flag(FNOEXEC) || (s->flags & SF_TTY)))
-			exstat = execute(t, 0, NULL);
+		if (t && (!Flag(FNOEXEC) || (s->flags & SF_TTY))) {
+			ran = 1;
+			exstat = execute(t, xflags, NULL);
+		}
 
 		if (t != NULL && t->type != TEOF && interactive && really_exit)
 			really_exit = 0;
@@ -631,6 +641,9 @@ shell(Source *volatile s, volatile int toplevel)
 	}
 	quitenv(NULL);
 	source = old_source;
+	/* an empty dot script or eval string returns 0 */
+	if (!ran && !toplevel)
+		exstat = 0;
 	return exstat;
 }
 

@@ -255,7 +255,10 @@ extern	pid_t	procpid;	/* pid of executing process */
 extern	uid_t	ksheuid;	/* effective uid of shell */
 extern	int	exstat;		/* exit status */
 extern	int	subst_exstat;	/* exit status of last $(..)/`..` */
+extern	int	subst_done;	/* the command had a $(..)/`..` */
 extern	int	trap_exstat;	/* $? before the running trap, or -1 */
+extern	int	builtin_xerrok;	/* builtin runs where set -e is ignored */
+extern	int	shell_xerrok;	/* next shell() ignores set -e */
 extern	int	traps_inherited; /* subshell has not changed traps yet */
 extern	const char *safe_prompt; /* safe prompt if PS1 substitution fails */
 extern	char	username[];	/* username for \u prompt expansion */

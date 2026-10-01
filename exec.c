@@ -73,6 +73,7 @@ execute(struct op *volatile t,
 		 * null commands (see comexec() and c_eval()) and by c_set().
 		 */
 		subst_exstat = 0;
+		subst_done = 0;
 
 		current_lineno = t->lineno;	/* for $LINENO */
 
@@ -537,6 +538,7 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
 	switch (tp->type) {
 	case CSHELL:			/* shell built-in */
 		rv = call_builtin(tp, ap);
+		builtin_xerrok = (flags & XERROK) || *xerrok;
 		break;
 
 	case CFUNC:			/* function call */

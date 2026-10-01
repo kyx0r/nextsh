@@ -2385,6 +2385,7 @@ expand(char *cp,	/* input word */
 					subst_exstat = waitlast();
 				else
 					subst_exstat = (x.u.shf == NULL);
+				subst_done = 1;
 				type = XBASE;
 				if (f&DOBLANK)
 					doblank--;

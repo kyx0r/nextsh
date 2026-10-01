@@ -211,7 +211,9 @@ c_dot(char **wp)
 		argc = 0;
 		argv = NULL;
 	}
+	shell_xerrok = builtin_xerrok;
 	i = include(file, argc, argv, 0);
+	shell_xerrok = 0;
 	if (i < 0) { /* should not happen */
 		bi_errorf("%s: %s", cp, strerror(errno));
 		return 1;
@@ -421,45 +423,18 @@ c_eval(char **wp)
 {
 	struct source *s;
 	struct source *saves = source;
-	int savef;
 	int rv;
 
 	if (ksh_getopt(wp, &builtin_opt, null) == '?')
 		return 1;
 	s = pushs(SWORDS, ATEMP);
 	s->u.strv = wp + builtin_opt.optind;
-	if (!Flag(FPOSIX)) {
-		/*
-		 * Handle case where the command is empty due to failed
-		 * command substitution, eg, eval "$(false)".
-		 * In this case, shell() will not set/change exstat (because
-		 * compiled tree is empty), so will use this value.
-		 * subst_exstat is cleared in execute(), so should be 0 if
-		 * there were no substitutions.
-		 *
-		 * A strict reading of POSIX says we don't do this (though
-		 * it is traditionally done). [from 1003.2-1992]
-		 *    3.9.1: Simple Commands
-		 *	... If there is a command name, execution shall
-		 *	continue as described in 3.9.1.1.  If there
-		 *	is no command name, but the command contained a command
-		 *	substitution, the command shall complete with the exit
-		 *	status of the last command substitution
-		 *    3.9.1.1: Command Search and Execution
-		 *	...(1)...(a) If the command name matches the name of
-		 *	a special built-in utility, that special built-in
-		 *	utility shall be invoked.
-		 * 3.14.5: Eval
-		 *	... If there are no arguments, or only null arguments,
-		 *	eval shall return an exit status of zero.
-		 */
-		exstat = subst_exstat;
-	}
 
-	savef = Flag(FERREXIT);
-	Flag(FERREXIT) = 0;
+	/* $? in eval "echo \$?" $(false) is that of the $(false) */
+	if (subst_done)
+		exstat = subst_exstat;
+	shell_xerrok = builtin_xerrok;
 	rv = shell(s, false);
-	Flag(FERREXIT) = savef;
 	source = saves;
 	afree(s, ATEMP);
 	return (rv);
