@@ -581,6 +581,11 @@ export(struct tbl *vp, const char *val)
  * set its attributes (INTEGER, RDONLY, EXPORT, TRACE, LJUST, RJUST, ZEROFIL,
  * LCASEV, UCASEV_AL), and optionally set its value if an assignment.
  */
+/* set by c_typeset: report a readonly variable with bi_errorf(), set
+ * typeset_bierr to 2 and return NULL
+ */
+int typeset_bierr;
+
 struct tbl *
 typeset(const char *var, int set, int clr, int field, int base)
 {
@@ -588,7 +593,9 @@ typeset(const char *var, int set, int clr, int field, int base)
 	struct tbl *vpbase, *t;
 	char *tvar;
 	const char *val;
+	int bierr = typeset_bierr;
 
+	typeset_bierr = 0;
 	/* check for valid variable name, search for value */
 	val = skip_varname(var, false);
 	if (val == var)
@@ -639,9 +646,17 @@ typeset(const char *var, int set, int clr, int field, int base)
 	 * (-L/-R/-Z/-i).
 	 */
 	if ((vpbase->flag&RDONLY) &&
-	    (val || clr || (set & ~EXPORT)))
-		/* XXX check calls - is error here ok by POSIX? */
+	    (val || clr || (set & ~EXPORT))) {
+		/* readonly, export and typeset: an error of the utility,
+		 * which doesn't exit the shell after command
+		 */
+		if (bierr) {
+			bi_errorf("%s: is read only", tvar);
+			typeset_bierr = 2;
+			return NULL;
+		}
 		errorf("%s: is read only", tvar);
+	}
 	if (val)
 		afree(tvar, ATEMP);
 

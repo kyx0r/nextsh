@@ -1455,6 +1455,7 @@ struct tbl *setint_v(struct tbl *, struct tbl *, bool);
 void	setint(struct tbl *, int64_t);
 int	getint(struct tbl *, int64_t *, bool);
 struct tbl *typeset(const char *, int, int, int, int);
+extern int typeset_bierr;
 void	unset(struct tbl *, int);
 char  * skip_varname(const char *, int);
 char	*skip_wdvarname(const char *, int);

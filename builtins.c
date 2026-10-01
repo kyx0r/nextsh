@@ -1691,9 +1691,17 @@ c_typeset(char **wp)
 					    f->flag & FKSH ?
 					    "function %s %T\n" :
 					    "%s() %T\n", wp[i], f->val.t);
-			} else if (!typeset(wp[i], fset, fclr, field, base)) {
-				bi_errorf("%s: not identifier", wp[i]);
-				return 1;
+			} else {
+				typeset_bierr = 1;
+				vp = typeset(wp[i], fset, fclr, field, base);
+				if (vp == NULL && typeset_bierr == 2) {
+					typeset_bierr = 0;
+					return 1;
+				}
+				if (vp == NULL) {
+					bi_errorf("%s: not identifier", wp[i]);
+					return 1;
+				}
 			}
 		}
 		return rval;
