@@ -883,7 +883,7 @@ const struct builtin shbuiltins [] = {
 	{"*=shift", c_shift},
 	{"*=times", c_times},
 	{"*=trap", c_trap},
-	{"+=wait", c_wait},
+	{"+wait", c_wait},
 	{"+read", c_read},
 	{"test", c_test},
 	{"+true", c_label},
