@@ -2256,6 +2256,12 @@ expand(char *cp,	/* input word */
 			case CSUBST: /* only get here if expanding word */
 				sp++; /* ({) skip the } or x */
 				tilde_ok = 0;	/* in case of ${unset:-} */
+				if (bsquote) {
+					/* a \ at the end of the pattern */
+					XcheckN(ds, dp, 2);
+					*dp++ = '\\';
+					bsquote = 0;
+				}
 				*dp = '\0';
 				quote = st->quote;
 				f = st->f;
@@ -2482,6 +2488,14 @@ expand(char *cp,	/* input word */
 			break;
 		}
 
+		/* a \ from an expansion at the end is itself */
+		if (c == 0 && bsquote) {
+			XcheckN(ds, dp, 2);
+			*dp++ = '\\';
+			bsquote = 0;
+			word = IFS_WORD;
+		}
+
 		/* check for end of word or IFS separation */
 		if (c == 0 || (!quote && (f & DOBLANK) && doblank &&
 		    !make_magic && ctype(c, C_IFS))) {
@@ -2547,7 +2561,7 @@ expand(char *cp,	/* input word */
 					 * expansion quotes the next character
 					 */
 					if ((f & DOPAT) && !(f & DOGLOB) &&
-					    type != XBASE && *x.str != '\0') {
+					    type != XBASE) {
 						bsquote = 1;
 						continue;
 					}
