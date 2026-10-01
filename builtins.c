@@ -193,8 +193,10 @@ c_dot(char **wp)
 	if (ksh_getopt(wp, &builtin_opt, null) == '?')
 		return 1;
 
-	if ((cp = wp[builtin_opt.optind]) == NULL)
-		return 0;
+	if ((cp = wp[builtin_opt.optind]) == NULL) {
+		bi_errorf("missing argument");
+		return 1;
+	}
 	file = search(cp, search_path, R_OK, &err);
 	if (file == NULL) {
 		bi_errorf("%s: %s", cp, err ? strerror(err) : "not found");
