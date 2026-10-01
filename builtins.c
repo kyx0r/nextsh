@@ -970,9 +970,13 @@ c_cd(char **wp)
 	int phys_path;
 	char *cdpath;
 	char *fdir = NULL;
+	int eflag = 0, rv_e = 0;
 
-	while ((optc = ksh_getopt(wp, &builtin_opt, "LP")) != -1)
+	while ((optc = ksh_getopt(wp, &builtin_opt, "eLP")) != -1)
 		switch (optc) {
+		case 'e':
+			eflag = 1;
+			break;
 		case 'L':
 			physical = 0;
 			break;
@@ -1068,7 +1072,8 @@ c_cd(char **wp)
 		else
 			bi_errorf("%s - %s", try, strerror(errno));
 		afree(fdir, ATEMP);
-		return 1;
+		/* with -e and -P, 1 means PWD could not be set */
+		return (physical && eflag) ? 2 : 1;
 	}
 
 	/* Clear out tracked aliases with relative paths */
@@ -1084,8 +1089,12 @@ c_cd(char **wp)
 	if (Xstr(xs)[0] != '/') {
 		pwd = NULL;
 	} else
-	if (!physical || !(pwd = get_phys_path(Xstr(xs))))
+	if (!physical || !(pwd = get_phys_path(Xstr(xs)))) {
+		/* -e: with -P, fail if PWD cannot be determined */
+		if (physical && eflag)
+			rv_e = 1;
 		pwd = Xstr(xs);
+	}
 
 	/* Set PWD */
 	if (pwd) {
@@ -1103,7 +1112,7 @@ c_cd(char **wp)
 
 	afree(fdir, ATEMP);
 
-	return 0;
+	return rv_e;
 }
 
 int
