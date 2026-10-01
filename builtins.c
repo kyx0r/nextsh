@@ -1990,7 +1990,8 @@ c_unalias(char **wp)
 
 	for (; *wp != NULL; wp++) {
 		ap = ktsearch(t, *wp, hash(*wp));
-		if (ap == NULL) {
+		if (ap == NULL || !(ap->flag & ISSET)) {
+			bi_errorf("%s: not found", *wp);
 			rv = 1;	/* POSIX */
 			continue;
 		}
