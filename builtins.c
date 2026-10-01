@@ -953,6 +953,40 @@ const struct builtin shbuiltins [] = {
 
 
 
+/*
+ * cd -L: POSIX says a .. component removes the component before it only
+ * if that is a directory; otherwise cd fails. Check each one that will
+ * be removed; return -1, with errno set, if one isn't a directory.
+ */
+static int
+cd_dotdot(char *path)
+{
+	struct stat sb;
+	char *p, *q;
+	int r;
+
+	for (p = path; (p = strstr(p, "/..")) != NULL; p += 3) {
+		if (p[3] != '/' && p[3] != '\0')
+			continue;
+		/* the component before: not none, root, . or .. */
+		for (q = p; q > path && q[-1] != '/'; q--)
+			;
+		if (q == p || (p - q == 1 && *q == '.') ||
+		    (p - q == 2 && q[0] == '.' && q[1] == '.'))
+			continue;
+		*p = '\0';
+		r = stat(path, &sb);
+		*p = '/';
+		if (r == -1)
+			return -1;
+		if (!S_ISDIR(sb.st_mode)) {
+			errno = ENOTDIR;
+			return -1;
+		}
+	}
+	return 0;
+}
+
 int
 c_cd(char **wp)
 {
@@ -1066,7 +1100,10 @@ c_cd(char **wp)
 			cdpath = null;
 		if (physical)
 			rval = chdir(try = Xstr(xs) + phys_path);
-		else {
+		else if (cd_dotdot(try = Xstr(xs))) {
+			/* a .. after something not a directory */
+			rval = -1;
+		} else {
 			simplify_path(Xstr(xs));
 			rval = chdir(try = Xstr(xs));
 		}
