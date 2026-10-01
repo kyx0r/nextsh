@@ -34,6 +34,7 @@
 #define	SCSDQUOTE 15		/* inside "" of a $() */
 #define	SCSSQUOTE 16		/* inside '' of a $() */
 #define	SCSBQUOTE 17		/* inside `` of a $() */
+#define	SDOLQUOTE 18		/* inside $'' */
 
 /* here documents whose body can be skipped inside one $() word */
 #define	CSHERES	8
@@ -53,11 +54,13 @@ struct lex_state {
 			int ncase;	/* open case .. esac, ) ends a pattern */
 			int needin;	/* case seen, waiting for its in */
 			int inpat;	/* at a case pattern: ( and ) are its */
+			int patstart;	/* no ( or word of the pattern yet */
 			int semi;	/* last token was a ; (;; ends an item) */
 			int cmdpos;	/* at the start of a command */
 			int inword;	/* in the middle of a word */
 			int wlen;	/* length of the word, >4 if not a kw */
 			char word[4];	/* enough to hold case and esac */
+			int dolq;	/* SCSSQUOTE of $'..': \ escapes */
 #define ls_scsparen ls_info.u_scsparen
 		} u_scsparen;
 
@@ -73,6 +76,12 @@ struct lex_state {
 			int nparen;	/* count open parenthesis */
 #define ls_sletparen ls_info.u_sletparen
 		} u_sletparen;
+
+		/* $'...' */
+		struct sdolquote_info {
+			int nul;	/* a \0 was seen: drop the rest */
+#define ls_sdolquote ls_info.u_sdolquote
+		} u_sdolquote;
 
 		/* `...` */
 		struct sbquote_info {
@@ -110,6 +119,8 @@ int		promptlen(const char *cp, const char **spp);
 static int backslash_skip;
 static int ignore_backslash_newline;
 
+static int	dolquote_esc(char *);
+
 Source *source;		/* yyparse/yylex source */
 YYSTYPE	yylval;		/* result from yylex */
 struct ioword *heres[HERES], **herep;
@@ -145,6 +156,7 @@ uint32_t histsize;	/* history size */
 			    statep->ls_scsparen.cmdpos = 1; \
 			    statep->ls_scsparen.inword = 0; \
 			    statep->ls_scsparen.wlen = 0; \
+			    statep->ls_scsparen.dolq = 0; \
 			} while (0)
 
 /* likewise, for a construct nested in the body being scanned */
@@ -351,11 +363,25 @@ yylex(int cf)
 			switch (c) {
 			case '\\':
 				c = getsc();
+				/* in "${v-word}" as in "...": a \ that does
+				 * not quote $ ` " \ or } is itself
+				 */
+				if (state == SBRACEQ && c && c != '\\' &&
+				    c != '$' && c != '`' && c != '"' &&
+				    c != '}') {
+					*wp++ = CHAR, *wp++ = '\\';
+					ungetsc(c);
+					break;
+				}
 				if (c) /* trailing \ is lost */
 					*wp++ = QCHAR, *wp++ = c;
 				break;
 			case '\'':
-				if ((cf & HEREDOC) || state == SBRACEQ) {
+				/* in a here-document, as in "...", ' is itself
+				 * except in the pattern of ${x#'pat'}
+				 */
+				if (((cf & HEREDOC) && state != STBRACE) ||
+				    state == SBRACEQ) {
 					*wp++ = CHAR, *wp++ = c;
 					break;
 				}
@@ -367,6 +393,15 @@ yylex(int cf)
 				*wp++ = OQUOTE;
 				PUSH_STATE(SDQUOTE);
 				break;
+			case '~':
+				/* no tilde expansion in ${x-~} in a here-
+				 * document, as in "${x-~}"
+				 */
+				if ((cf & HEREDOC) && state == SBRACE) {
+					*wp++ = QCHAR, *wp++ = c;
+					break;
+				}
+				goto Subst;
 			default:
 				goto Subst;
 			}
@@ -446,6 +481,14 @@ yylex(int cf)
 						else
 							PUSH_STATE(SBRACE);
 					}
+				} else if (c == '\'' && !(cf & HEREDOC) &&
+				    (state == SBASE || state == SBRACE ||
+				    state == STBRACE || state == SPATTERN)) {
+					/* $'...' */
+					*wp++ = OQUOTE;
+					ignore_backslash_newline++;
+					PUSH_STATE(SDOLQUOTE);
+					statep->ls_sdolquote.nul = 0;
 				} else if (ctype(c, C_ALPHA)) {
 					*wp++ = OSUBST;
 					*wp++ = 'X';
@@ -478,7 +521,8 @@ yylex(int cf)
 				 * since sh/at&t-ksh translate the \" to " in
 				 * "`..\"..`".
 				 */
-				statep->ls_sbquote.indquotes = 0;
+				/* a here-document counts as double quotes */
+				statep->ls_sbquote.indquotes = !!(cf & HEREDOC);
 				Lex_state *s = statep;
 				Lex_state *base = state_info.base;
 				while (1) {
@@ -521,6 +565,33 @@ yylex(int cf)
 				goto Subst;
 			break;
 
+		case SDOLQUOTE: {
+			char buf[4];
+			int i, n = 1;
+
+			if (c == '\'') {
+				POP_STATE();
+				*wp++ = CQUOTE;
+				ignore_backslash_newline--;
+				break;
+			}
+			buf[0] = c;
+			if (c == '\\')
+				n = dolquote_esc(buf);
+			if (statep->ls_sdolquote.nul)
+				break;
+			XcheckN(ws, wp, 2 * n);
+			for (i = 0; i < n; i++) {
+				if (buf[i] == '\0') {
+					/* the rest up to ' is dropped */
+					statep->ls_sdolquote.nul = 1;
+					break;
+				}
+				*wp++ = QCHAR, *wp++ = buf[i];
+			}
+			break;
+		    }
+
 		case SCSPAREN:	/* $( .. ) */
 		case SCSBRACE:	/* ${ .. } inside $( .. ) */
 		case SCSDQUOTE:	/* " .. " inside $( .. ) */
@@ -559,8 +630,10 @@ yylex(int cf)
 						statep->ls_scsparen.needin = 1;
 					} else if (statep->ls_scsparen.wlen == 4 &&
 					    statep->ls_scsparen.ncase &&
-					    (statep->ls_scsparen.cmdpos ||
-					    statep->ls_scsparen.inpat) &&
+					    /* not in (x|esac) */
+					    (statep->ls_scsparen.inpat ?
+					    statep->ls_scsparen.patstart :
+					    statep->ls_scsparen.cmdpos) &&
 					    !strncmp(statep->ls_scsparen.word,
 					    "esac", 4)) {
 						statep->ls_scsparen.ncase--;
@@ -571,7 +644,9 @@ yylex(int cf)
 					    "in", 2)) {
 						statep->ls_scsparen.needin = 0;
 						statep->ls_scsparen.inpat = 1;
-					}
+						statep->ls_scsparen.patstart = 1;
+					} else if (statep->ls_scsparen.inword)
+						statep->ls_scsparen.patstart = 0;
 					if (statep->ls_scsparen.inword)
 						statep->ls_scsparen.cmdpos = 0;
 					statep->ls_scsparen.inword = 0;
@@ -584,8 +659,10 @@ yylex(int cf)
 					 */
 					if (c == ';') {
 						if (statep->ls_scsparen.semi &&
-						    statep->ls_scsparen.ncase)
+						    statep->ls_scsparen.ncase) {
 							statep->ls_scsparen.inpat = 1;
+							statep->ls_scsparen.patstart = 1;
+						}
 						statep->ls_scsparen.semi =
 						    !statep->ls_scsparen.semi;
 					} else if (c != ' ' && c != '\t')
@@ -599,7 +676,8 @@ yylex(int cf)
 				if (c == '\'') {
 					done = 1;
 					ignore_backslash_newline--;
-				}
+				} else if (c == '\\' && statep->ls_scsparen.dolq)
+					statep->ls_scsparen.csstate = 1;
 			} else if (c == '\\')
 				statep->ls_scsparen.csstate = 1;
 			else if (state == SCSBQUOTE)
@@ -611,7 +689,11 @@ yylex(int cf)
 			else if (state == SCSPAREN && c == '(') /*)*/ {
 				if (!statep->ls_scsparen.inpat)
 					statep->ls_scsparen.nparen++;
-				/* else: ( of a case pattern, matched by its ) */
+				else
+					/* ( of a case pattern, matched by
+					 * its )
+					 */
+					statep->ls_scsparen.patstart = 0;
 			} else if (state == SCSPAREN && c == /*(*/ ')') {
 				if (statep->ls_scsparen.inpat)
 					statep->ls_scsparen.inpat = 0;
@@ -672,6 +754,14 @@ yylex(int cf)
 					c = c2;
 					PUSH_CSSTATE(c2 == '(' /*)*/ ?
 					    SCSPAREN : SCSBRACE, 1);
+				} else if (c2 == '\'' && state != SCSDQUOTE) {
+					/* $'...': \' doesn't end it */
+					XcheckN(ws, wp, 2);
+					*wp++ = c;
+					c = c2;
+					PUSH_CSSTATE(SCSSQUOTE, 1);
+					statep->ls_scsparen.dolq = 1;
+					ignore_backslash_newline++;
 				} else
 					ungetsc(c2);
 			} else if (c == '`')
@@ -952,6 +1042,8 @@ Done:
 				    YYERRCODE;
 			else if (c == '|' && c2 == '&')
 				c = COPROC;
+			else if (c == ';' && c2 == '&')
+				c = CASEFT;
 			else
 				ungetsc(c2);
 			return c;
@@ -995,7 +1087,7 @@ Done:
 
 		/* { */
 		if ((cf & KEYWORD) && (p = ktsearch(&keywords, ident, h)) &&
-		    (!(cf & ESACONLY) || p->val.i == ESAC || p->val.i == '}')) {
+		    (!(cf & ESACONLY) || p->val.i == ESAC)) {
 			afree(yylval.cp, ATEMP);
 			return p->val.i;
 		}
@@ -1182,7 +1274,8 @@ getsc__(void)
 				source->flags |= s->flags & SF_ALIAS;
 				s = source;
 			} else if (*s->u.tblp->val.s &&
-			    isspace((unsigned char)strchr(s->u.tblp->val.s, 0)[-1])) {
+			    (strchr(s->u.tblp->val.s, 0)[-1] == ' ' ||
+			    strchr(s->u.tblp->val.s, 0)[-1] == '\t')) {
 				source = s = s->next;	/* pop source stack */
 				/* Note that this alias ended with a space,
 				 * enabling alias expansion on the following
@@ -1324,6 +1417,111 @@ getsc_line(Source *s)
 		set_prompt(PS2);
 }
 
+/*
+ * Decode the escape sequence after a \ in $'...' into buf, which holds
+ * 4 bytes, and return their number. \u and \U, an extension, give
+ * UTF-8; a \0 byte ends the string, which the caller handles.
+ */
+static int
+dolquote_esc(char *buf)
+{
+	int c, i, n, max;
+	unsigned long v;
+
+	switch ((c = getsc())) {
+	case 'a': c = '\a'; break;
+	case 'b': c = '\b'; break;
+	case 'e': c = 033; break;
+	case 'f': c = '\f'; break;
+	case 'n': c = '\n'; break;
+	case 'r': c = '\r'; break;
+	case 't': c = '\t'; break;
+	case 'v': c = '\v'; break;
+	case '\\': case '\'': case '"':
+		break;
+	case 'c':
+		/* \cX: control-X; \c\\ is control-\ */
+		if ((c = getsc()) == '\\' && (c = getsc()) != '\\') {
+			ungetsc(c);
+			c = '\\';
+		}
+		if (c == '\0' || c == '\'') {
+			ungetsc(c);
+			buf[0] = '\\', buf[1] = 'c';
+			return 2;
+		}
+		c = c == '?' ? 0177 : c & 037;
+		break;
+	case 'x':
+	case 'u':
+	case 'U':
+		max = c == 'x' ? 2 : c == 'u' ? 4 : 8;
+		for (v = 0, n = 0; n < max; n++) {
+			if (!ctype(i = getsc(), C_ALPHA) && !digit(i)) {
+				ungetsc(i);
+				break;
+			}
+			if (digit(i))
+				i -= '0';
+			else if (i >= 'a' && i <= 'f')
+				i -= 'a' - 10;
+			else if (i >= 'A' && i <= 'F')
+				i -= 'A' - 10;
+			else {
+				ungetsc(i);
+				break;
+			}
+			v = v * 16 + i;
+		}
+		if (n == 0) {
+			if (c != 'x')
+				yyerror("syntax error: \\%c with no digits in $'...'\n",
+				    c);
+			buf[0] = '\\', buf[1] = 'x';
+			return 2;
+		}
+		if (c == 'x' || v < 0x80) {
+			c = v & 0xff;
+			break;
+		}
+		if (v > 0x10ffff || (v >= 0xd800 && v <= 0xdfff))
+			yyerror("syntax error: \\%c%0*lx in $'...' is not a character\n",
+			    c, c == 'u' ? 4 : 8, v);
+		if (v < 0x800) {
+			buf[0] = 0xc0 | v >> 6;
+			n = 1;
+		} else if (v < 0x10000) {
+			buf[0] = 0xe0 | v >> 12;
+			n = 2;
+		} else {
+			buf[0] = 0xf0 | v >> 18;
+			n = 3;
+		}
+		for (i = 1; i <= n; i++)
+			buf[i] = 0x80 | ((v >> 6 * (n - i)) & 077);
+		return n + 1;
+	case '0': case '1': case '2': case '3':
+	case '4': case '5': case '6': case '7':
+		v = c - '0';
+		for (n = 1; n < 3 && (c = getsc()) >= '0' && c <= '7'; n++)
+			v = v * 8 + c - '0';
+		if (n < 3)
+			ungetsc(c);
+		c = v & 0xff;
+		break;
+	case '\0':
+		/* \ at the end of the input */
+		buf[0] = '\\';
+		return 1;
+	default:
+		/* unspecified: keep the \ */
+		buf[0] = '\\', buf[1] = c;
+		return 2;
+	}
+	buf[0] = c;
+	return 1;
+}
+
 static char *
 special_prompt_expand(char *str)
 {
@@ -1340,6 +1538,7 @@ set_prompt(int to)
 {
 	char *ps1;
 	Area *saved_atemp;
+	int bs, ibn;
 
 	cur_prompt = to;
 
@@ -1364,7 +1563,28 @@ set_prompt(int to)
 		quitenv(NULL);
 		break;
 	case PS2: /* command continuation */
+		/*
+		 * POSIX: PS2 undergoes parameter expansion. We are in
+		 * the middle of parsing a command: lex the prompt as
+		 * substitute() does, but leave alone a prompt with a
+		 * command substitution, which would parse recursively.
+		 */
 		prompt = str_val(global("PS2"));
+		if (strchr(prompt, '$') == NULL || strchr(prompt, '`') ||
+		    strstr(prompt, "$("))
+			break;
+		ps1 = str_save(prompt, ATEMP);
+		saved_atemp = ATEMP;
+		bs = backslash_skip;
+		ibn = ignore_backslash_newline;
+		newenv(E_ERRH);
+		if (sigsetjmp(genv->jbuf, 0))
+			prompt = "> ";
+		else
+			prompt = str_save(substitute(ps1, 0), saved_atemp);
+		quitenv(NULL);
+		backslash_skip = bs;
+		ignore_backslash_newline = ibn;
 		break;
 	}
 }
@@ -2002,7 +2222,8 @@ yyparse(void)
 
 	reject = false;
 
-	outtree = c_list(source->type == SSTRING);
+	outtree = c_list(source->type == SSTRING &&
+	    !(source->flags & SF_LINES));
 	c = tpeek(0);
 	if (c == 0 && !outtree)
 		outtree = newtp(TEOF);
@@ -2134,10 +2355,13 @@ get_command(int cf)
 {
 	struct op *t;
 	int c, iopn = 0, syniocf;
+	int ncommand = 0;		/* leading "command" words */
 	struct ioword *iop, **iops;
 	XPtrV args, vars;
 	struct nesting_state old_nesting;
 
+	if (stack_deep())
+		yyerror("nesting too deep\n");
 	iops = areallocarray(NULL, NUFILE + 1,
 	    sizeof(struct ioword *), ATEMP);
 	XPinit(args, 16);
@@ -2173,10 +2397,16 @@ get_command(int cf)
 				/* the iopn == 0 and XPsize(vars) == 0 are
 				 * dubious but at&t ksh acts this way
 				 */
+				/* declaration utilities, after any
+				 * number of "command"s
+				 */
 				if (iopn == 0 && XPsize(vars) == 0 &&
-				    XPsize(args) == 0 &&
+				    XPsize(args) == ncommand &&
 				    assign_command(ident))
 					t->u.evalflags = DOVACHECK;
+				if (XPsize(args) == ncommand &&
+				    strcmp(ident, "command") == 0)
+					ncommand++;
 				if ((XPsize(args) == 0 || Flag(FKEYWORD)) &&
 				    is_wdvarassign(yylval.cp))
 					XPput(vars, yylval.cp);
@@ -2421,11 +2651,9 @@ caselist(void)
 	int c;
 
 	c = token(CONTIN|KEYWORD|ALIAS);
-	/* A {...} can be used instead of in...esac for case statements */
+	/* not ksh's {...} instead of in...esac: } may be a pattern */
 	if (c == IN)
 		c = ESAC;
-	else if (c == '{')
-		c = '}';
 	else
 		syntaxerr(NULL);
 	t = tl = NULL;
@@ -2462,8 +2690,11 @@ casepart(int endtok)
 	musthave(')', 0);
 
 	t->left = c_list(true);
-	/* Note: Posix requires the ;; */
-	if ((tpeek(CONTIN|KEYWORD|ALIAS)) != endtok)
+	/* Note: Posix requires the ;; or ;& */
+	if ((c = tpeek(CONTIN|KEYWORD|ALIAS)) == CASEFT) {
+		t->u.fallthru = 1;
+		token(CONTIN|KEYWORD|ALIAS);
+	} else if (c != endtok)
 		musthave(BREAK, CONTIN|KEYWORD|ALIAS);
 	return (t);
 }
@@ -2595,6 +2826,7 @@ const	struct tokeninfo {
 	{ "&&",		LOGAND,	false },
 	{ "||",		LOGOR,	false },
 	{ ";;",		BREAK,	false },
+	{ ";&",		CASEFT,	false },
 	{ "((",		MDPAREN, false },
 	{ "|&",		COPROC,	false },
 	/* and some special cases... */
@@ -2724,7 +2956,7 @@ compile(Source *s)
 static int
 assign_command(char *s)
 {
-	if (Flag(FPOSIX) || !*s)
+	if (!*s)
 		return 0;
 	return (strcmp(s, "alias") == 0) ||
 	    (strcmp(s, "export") == 0) ||
@@ -2949,7 +3181,8 @@ ptree(struct op *t, int indent, struct shf *shf)
 			for (w = t1->vars; *w != NULL; w++)
 				fptreef(shf, indent, "%S%c", *w,
 				    (w[1] != NULL) ? '|' : ')');
-			fptreef(shf, indent + INDENT, "%;%T%N;;", t1->left);
+			fptreef(shf, indent + INDENT, "%;%T%N;%c", t1->left,
+			    t1->u.fallthru ? '&' : ';');
 		}
 		fptreef(shf, indent, "%Nesac ");
 		break;

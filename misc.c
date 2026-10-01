@@ -409,6 +409,65 @@ static const struct cclass {
 
 #define NCCLASSES	(sizeof(cclasses) / sizeof(cclasses[0]) - 1)
 
+static const char *stack_base;
+static size_t stack_max;
+
+/* an address in the current stack frame; with sanitizers, locals may
+ * live on a separate fake stack so prefer the frame address */
+#ifdef __GNUC__
+#define stack_addr()	((const char *) __builtin_frame_address(0))
+#else
+static const char *
+stack_addr(void)
+{
+	volatile char here;
+
+	return (const char *) &here;
+}
+#endif
+
+/* remember where the stack starts and how much of it may be used, so
+ * deeply nested input or runaway recursion fails with an error instead
+ * of overflowing the stack
+ */
+void
+stack_init(void)
+{
+	struct rlimit rl;
+	size_t lim = 8 * 1024 * 1024;
+
+	if (getrlimit(RLIMIT_STACK, &rl) == 0) {
+		if (rl.rlim_cur == RLIM_INFINITY)
+			lim = 256 * 1024 * 1024;
+		else
+			lim = rl.rlim_cur;
+	}
+	/* leave headroom for the deepest frames between checks and for
+	 * the error path itself */
+	stack_base = stack_addr();
+	stack_max = lim - (lim / 4 > 1024 * 1024 ? 1024 * 1024 : lim / 4);
+}
+
+bool
+stack_deep(void)
+{
+	const char *here = stack_addr();
+	size_t used;
+
+	if (stack_base == NULL)
+		return false;
+	used = here < stack_base ? (size_t) (stack_base - here) :
+	    (size_t) (here - stack_base);
+	return used > stack_max;
+}
+
+void
+stack_check(void)
+{
+	if (stack_deep())
+		errorf("nesting too deep");
+}
+
 /*
  * Fast character classes
  */
@@ -941,19 +1000,41 @@ has_globbing(const char *xp, const char *xpe)
 			else
 				nest++;
 		} else if (c == '|') {
-			if (in_bracket && !bnest)	/* *(a[foo|bar]) */
-				return 0;
+			/* *(a[foo|bar]): the [ is an ordinary one */
+			if (in_bracket && !bnest)
+				in_bracket = 0;
 		} else if (c == /*(*/ ')') {
-			if (in_bracket) {
-				if (!bnest--)		/* *(a[b)c] */
-					return 0;
-			} else if (nest)
-				nest--;
+			if (in_bracket && bnest)
+				bnest--;
+			else {
+				/* *(a[b)c]: the [ is an ordinary one */
+				in_bracket = 0;
+				if (nest)
+					nest--;
+			}
 		}
 		/* else must be a MAGIC-MAGIC, or MAGIC-!, MAGIC--, MAGIC-]
 			 MAGIC-{, MAGIC-,, MAGIC-} */
 	}
-	return saw_glob && !in_bracket && !nest;
+	/* a [ left open is an ordinary one, do_gmatch() knows */
+	return saw_glob && !nest;
+}
+
+/* Does the bracket expression starting at p end before pe? */
+static int
+bracket_closed(const unsigned char *p, const unsigned char *pe)
+{
+	if (p + 1 < pe && ISMAGIC(p[0]) && p[1] == '!')
+		p += 2;
+	/* a ] first is a member */
+	if (p < pe && *p == ']')
+		p++;
+	else if (p + 1 < pe && ISMAGIC(p[0]) && p[1] == ']')
+		p += 2;
+	for (; p + 1 < pe; p++)
+		if (ISMAGIC(p[0]) && p[1] == ']')
+			return 1;
+	return 0;
 }
 
 /* Function must return either 0 or 1 (assumed by code for 0x80|'!') */
@@ -978,6 +1059,12 @@ do_gmatch(const unsigned char *s, const unsigned char *se,
 		}
 		switch (*p++) {
 		case '[':
+			/* a [ without a closing ] is an ordinary [ */
+			if (!bracket_closed(p, pe)) {
+				if (sc != '[')
+					return 0;
+				break;
+			}
 			if (sc == 0 || (p = cclass(p, sc)) == NULL)
 				return 0;
 			break;
@@ -1111,11 +1198,37 @@ posix_cclass(const unsigned char *pattern, int test, const unsigned char **ep)
 	return rval;
 }
 
+/*
+ * A collating symbol [.c.] or equivalence class [=c=] at p, which in
+ * the C locale are the character c: set *cp to c and return the
+ * pointer past it, or return NULL if there is none.
+ */
+static const unsigned char *
+collsym(const unsigned char *p, int *cp)
+{
+	int c, delim;
+
+	if (ISMAGIC(*p))
+		p++;
+	if (*p++ != '[' || ((delim = *p++) != '.' && delim != '='))
+		return NULL;
+	if (ISMAGIC(*p))
+		p++;
+	if ((c = *p++) == '\0' || *p++ != delim)
+		return NULL;
+	if (ISMAGIC(*p))
+		p++;
+	if (*p++ != ']')
+		return NULL;
+	*cp = c;
+	return p;
+}
+
 static const unsigned char *
 cclass(const unsigned char *p, int sub)
 {
 	int c, d, rv, not, found = 0;
-	const unsigned char *orig_p = p;
+	const unsigned char *orig_p = p, *q;
 
 	if ((not = (ISMAGIC(*p) && *++p == '!')))
 		p++;
@@ -1138,8 +1251,9 @@ cclass(const unsigned char *p, int sub)
 				break;
 		}
 
-		c = *p++;
-		if (ISMAGIC(c)) {
+		if ((q = collsym(p, &c)) != NULL)
+			p = q;
+		else if (ISMAGIC(c = *p++)) {
 			c = *p++;
 			if ((c & 0x80) && !ISMAGIC(c)) {
 				c &= 0x7f;/* extended pattern matching: *+?@! */
@@ -1154,8 +1268,9 @@ cclass(const unsigned char *p, int sub)
 		if (ISMAGIC(p[0]) && p[1] == '-' &&
 		    (!ISMAGIC(p[2]) || p[3] != ']')) {
 			p += 2; /* MAGIC- */
-			d = *p++;
-			if (ISMAGIC(d)) {
+			if ((q = collsym(p, &d)) != NULL)
+				p = q;
+			else if (ISMAGIC(d = *p++)) {
 				d = *p++;
 				if ((d & 0x80) && !ISMAGIC(d))
 					d &= 0x7f;
@@ -1352,10 +1467,10 @@ print_value_quoted(const char *s)
 
 	/* Test if any quotes are needed */
 	for (p = s; *p; p++)
-		if (ctype(*p, C_QUOTE))
+		if (ctype(*p, C_QUOTE) || *p == '~')
 			break;
 	if (!*p) {
-		shprintf("%s", s);
+		shprintf("%s", *s ? s : "''");
 		return;
 	}
 	for (p = s; *p; p++) {

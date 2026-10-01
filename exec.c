@@ -15,7 +15,7 @@
 static int	comexec(struct op *, struct tbl *volatile, char **,
 		    int volatile, volatile int *);
 static void	scriptexec(struct op *, char **);
-static int	call_builtin(struct tbl *, char **);
+static int	call_builtin(struct tbl *, char **, int);
 static int	iosetup(struct ioword *, struct tbl *);
 static int	herein(const char *, int);
 static char	*do_selectargs(char **, bool);
@@ -44,6 +44,8 @@ execute(struct op *volatile t,
 	struct ioword **iowp;
 	struct tbl *tp = NULL;
 
+	stack_check();
+
 	if (t == NULL)
 		return 0;
 
@@ -71,6 +73,7 @@ execute(struct op *volatile t,
 		 * null commands (see comexec() and c_eval()) and by c_set().
 		 */
 		subst_exstat = 0;
+		subst_done = 0;
 
 		current_lineno = t->lineno;	/* for $LINENO */
 
@@ -105,12 +108,11 @@ execute(struct op *volatile t,
 		for (iowp = t->ioact; *iowp != NULL; iowp++) {
 			if (iosetup(*iowp, tp) < 0) {
 				exstat = rv = 1;
-				/* Except in the permanent case (exec 2>afile),
-				 * redirection failures for special commands
-				 * cause (non-interactive) shell to exit.
+				/* Redirection failures for special commands,
+				 * exec too, cause (non-interactive) shell to
+				 * exit.
 				 */
-				if (tp && tp->val.f != c_exec &&
-				    tp->type == CSHELL &&
+				if (tp && tp->type == CSHELL &&
 				    (tp->flag & SPEC_BI))
 					errorf(NULL);
 				/* Deal with FERREXIT, quitenv(), etc. */
@@ -348,6 +350,12 @@ execute(struct op *volatile t,
 		break;
 	  Found:
 		rv = execute(t->left, flags & XERROK, xerrok);
+		/* ;& runs the next item's commands too */
+		while (t->u.fallthru && t->right != NULL) {
+			t = t->right;
+			if (t->left != NULL)
+				rv = execute(t->left, flags & XERROK, xerrok);
+		}
 		break;
 
 	case TBRACE:
@@ -369,6 +377,9 @@ execute(struct op *volatile t,
 		s = t->args[0];
 		ap = makenv();
 		restoresigs();
+		/* a signal caught on the way here is not lost */
+		if (trap)
+			runtraps(TF_DFL_INTR|TF_FATAL);
 		cleanup_proc_env();
 		execve(t->str, t->args, ap);
 		if (errno == ENOEXEC)
@@ -442,10 +453,16 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
 				break;
 			}
 			tp = findcom(cp, FC_BI);
-			if (tp == NULL)
-				errorf("builtin: %s: not a builtin", cp);
+			if (tp == NULL) {
+				warningf(true, "builtin: %s: not a builtin",
+				    cp);
+				rv = 1;
+				goto Leave;
+			}
 			continue;
 		} else if (tp->val.f == c_exec) {
+			if (ap[1] != NULL && strcmp(ap[1], "--") == 0)
+				ap++;
 			if (ap[1] == NULL)
 				break;
 			ap++;
@@ -486,7 +503,11 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
 			break;
 		tp = findcom(ap[0], fcflags & (FC_BI|FC_FUNC));
 	}
-	if (keepasn_ok && (!ap[0] || (tp && (tp->flag & KEEPASN))))
+	/* Without assignments "command set" and "command shift" need no
+	 * block either, which would throw away the $@ they change.
+	 */
+	if ((keepasn_ok || !t->vars[0]) &&
+	    (!ap[0] || (tp && (tp->flag & KEEPASN))))
 		type_flags = 0;
 	else {
 		/* create new variable/function block */
@@ -531,12 +552,14 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
 
 	switch (tp->type) {
 	case CSHELL:			/* shell built-in */
-		rv = call_builtin(tp, ap);
+		builtin_xerrok = (flags & XERROK) || *xerrok;
+		/* command makes special builtins regular */
+		rv = call_builtin(tp, ap, !keepasn_ok);
 		break;
 
 	case CFUNC:			/* function call */
 	    {
-		volatile int old_xflag, old_inuse;
+		volatile int old_xflag, old_inuse, old_trap_infunc;
 		const char *volatile old_kshname;
 
 		if (!(tp->flag & ISSET)) {
@@ -602,6 +625,10 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
 		old_inuse = tp->flag & FINUSE;
 		tp->flag |= FINUSE;
 
+		/* return in it uses its own $?, even in a trap action */
+		old_trap_infunc = trap_infunc;
+		trap_infunc = 1;
+
 		genv->type = E_FUNC;
 		i = sigsetjmp(genv->jbuf, 0);
 		if (i == 0) {
@@ -610,6 +637,7 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
 			i = LRETURN;
 		}
 		kshname = old_kshname;
+		trap_infunc = old_trap_infunc;
 		Flag(FXTRACE) = old_xflag;
 		tp->flag = (tp->flag & ~FINUSE) | old_inuse;
 		/* Were we deleted while executing?  If so, free the execution
@@ -669,8 +697,17 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
 		if (flags&XEXEC) {
 			j_exit();
 			if (!(flags&XBGND) || Flag(FMONITOR)) {
-				setexecsig(&sigtraps[SIGINT], SS_RESTORE_ORIG);
-				setexecsig(&sigtraps[SIGQUIT], SS_RESTORE_ORIG);
+				/* unless changed by trap or ignored in a
+				 * background job
+				 */
+				if (!(sigtraps[SIGINT].flags &
+				    (TF_USER_SET|TF_EXEC_IGN)))
+					setexecsig(&sigtraps[SIGINT],
+					    SS_RESTORE_ORIG);
+				if (!(sigtraps[SIGQUIT].flags &
+				    (TF_USER_SET|TF_EXEC_IGN)))
+					setexecsig(&sigtraps[SIGQUIT],
+					    SS_RESTORE_ORIG);
 			}
 		}
 
@@ -686,15 +723,58 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
   Leave:
 	if (flags & XEXEC) {
 		exstat = rv;
-		unwind(LLEAVE);
+		/* not with the redirections of the command */
+		if (genv->savefd != NULL) {
+			for (i = 0; i < NUFILE; i++)
+				if (genv->savefd[i])
+					restfd(i, genv->savefd[i]);
+			if (genv->savefd[2])
+				shf_reopen(2, SHF_WR, shl_out);
+			genv->savefd = NULL;
+		}
+		unwind(LEXIT);	/* runs the EXIT trap */
 	}
 	return rv;
+}
+
+/* a newline after shell-like text comes before the first NUL */
+static int
+looks_like_text(const char *p)
+{
+	int code = 0;
+
+	for (; *p != '\0'; p++) {
+		if ((*p >= 'a' && *p <= 'z') || *p == '$' || *p == '`')
+			code = 1;
+		else if (*p == '\n' && code)
+			return 1;
+	}
+	return 0;
 }
 
 static void
 scriptexec(struct op *tp, char **ap)
 {
 	char *shell;
+	char buf[512];
+	ssize_t n;
+	int fd;
+
+	/* Not a script but a binary for some other system?  A NUL may
+	 * follow a script (one that ends in exit, say), but not come
+	 * before a line that looks like shell code: one with a lowercase
+	 * letter, $ or `, so a PNG or ELF header is caught.
+	 */
+	if ((fd = open(tp->str, O_RDONLY | O_CLOEXEC)) >= 0) {
+		n = read(fd, buf, sizeof(buf));
+		close(fd);
+		if (n > 0 && memchr(buf, '\0', n) && !looks_like_text(buf)) {
+			warningf(true, "%s: cannot execute binary file",
+			    tp->str);
+			exstat = 126;
+			unwind(LLEAVE);
+		}
+	}
 
 	shell = str_val(global("EXECSHELL"));
 	if (shell && *shell)
@@ -719,7 +799,7 @@ shcomexec(char **wp)
 	tp = ktsearch(&builtins, *wp, hash(*wp));
 	if (tp == NULL)
 		internal_errorf("%s: %s", __func__, *wp);
-	return call_builtin(tp, wp);
+	return call_builtin(tp, wp, 0);
 }
 
 /*
@@ -1011,17 +1091,24 @@ search(const char *name, const char *path,
 }
 
 static int
-call_builtin(struct tbl *tp, char **wp)
+call_builtin(struct tbl *tp, char **wp, int regular)
 {
 	int rv;
 
 	builtin_argv0 = wp[0];
 	builtin_flag = tp->flag;
+	if (regular)
+		builtin_flag &= ~(SPEC_BI|KEEPASN);
 	shf_reopen(1, SHF_WR, shl_stdout);
 	shl_stdout_ok = 1;
 	ksh_getopt_reset(&builtin_opt, GF_ERROR);
 	rv = (*tp->val.f)(wp);
-	shf_flush(shl_stdout);
+	/* pwd >/dev/full fails */
+	if (shf_flush(shl_stdout) == EOF && rv == 0) {
+		warningf(true, "%s: write error: %s", builtin_argv0,
+		    strerror(errno));
+		rv = 1;
+	}
 	shl_stdout_ok = 0;
 	builtin_flag = 0;
 	builtin_argv0 = NULL;
@@ -1255,7 +1342,7 @@ do_selectargs(char **ap, bool print_menu)
 		if (print_menu || !*str_val(global("REPLY")))
 			pr_menu(ap);
 		shellf("%s", str_val(global("PS3")));
-		if (call_builtin(findcom("read", FC_BI), (char **) read_args))
+		if (call_builtin(findcom("read", FC_BI), (char **) read_args, 0))
 			return NULL;
 		s = str_val(global("REPLY"));
 		if (*s) {

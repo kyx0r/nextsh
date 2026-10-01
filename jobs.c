@@ -384,6 +384,8 @@ exchild(struct op *t, int flags, volatile int *xerrok,
 	int		rv = 0;
 	int		forksleep;
 	int		ischild;
+	int		bgign;
+	sigset_t	sm_fork;
 
 	if (flags & XEXEC)
 		/* Clear XFORK|XPCLOSE|XCCLOSE|XCOPROC|XPIPEO|XPIPEI|XXCOM|XBGND
@@ -432,6 +434,16 @@ exchild(struct op *t, int flags, volatile int *xerrok,
 
 	snptreef(p->command, sizeof(p->command), "%T", t);
 
+	/* Hold off the signals the child must not lose before it has
+	 * reset its traps; the child handles them once it has.
+	 */
+	sigemptyset(&sm_fork);
+	sigaddset(&sm_fork, SIGINT);
+	sigaddset(&sm_fork, SIGQUIT);
+	sigaddset(&sm_fork, SIGTERM);
+	sigaddset(&sm_fork, SIGHUP);
+	sigprocmask(SIG_BLOCK, &sm_fork, NULL);
+
 	/* create child process */
 	forksleep = 1;
 	while ((i = fork()) == -1 && errno == EAGAIN && forksleep < 32) {
@@ -449,8 +461,10 @@ exchild(struct op *t, int flags, volatile int *xerrok,
 	ischild = i == 0;
 	if (ischild)
 		p->pid = procpid = getpid();
-	else
+	else {
 		p->pid = i;
+		sigprocmask(SIG_UNBLOCK, &sm_fork, NULL);
+	}
 
 	/* job control set up */
 	if (Flag(FMONITOR) && !(flags&XXCOM)) {
@@ -481,7 +495,15 @@ exchild(struct op *t, int flags, volatile int *xerrok,
 		/* Do this before restoring signal */
 		if (flags & XCOPROC)
 			coproc_cleanup(false);
-		sigprocmask(SIG_SETMASK, &omask, NULL);
+		{
+			sigset_t m = omask;
+
+			sigaddset(&m, SIGINT);
+			sigaddset(&m, SIGQUIT);
+			sigaddset(&m, SIGTERM);
+			sigaddset(&m, SIGHUP);
+			sigprocmask(SIG_SETMASK, &m, NULL);
+		}
 		cleanup_parents_env();
 		/* If FMONITOR or FTALKING is set, these signals are ignored,
 		 * if neither FMONITOR nor FTALKING are set, the signals have
@@ -494,11 +516,8 @@ exchild(struct op *t, int flags, volatile int *xerrok,
 		}
 		if (Flag(FBGNICE) && (flags & XBGND))
 			nice(4);
-		if ((flags & XBGND) && !Flag(FMONITOR)) {
-			setsig(&sigtraps[SIGINT], SIG_IGN,
-			    SS_RESTORE_IGN|SS_FORCE);
-			setsig(&sigtraps[SIGQUIT], SIG_IGN,
-			    SS_RESTORE_IGN|SS_FORCE);
+		bgign = (flags & XBGND) && !Flag(FMONITOR);
+		if (bgign) {
 			if (!(flags & (XPIPEI | XCOPROC))) {
 				int fd = open("/dev/null", O_RDONLY);
 				if (fd != 0) {
@@ -514,6 +533,14 @@ exchild(struct op *t, int flags, volatile int *xerrok,
 		Flag(FTALKING) = 0;
 		tty_close();
 		cleartraps();
+		/* after cleartraps(), which would reset trapped ones */
+		if (bgign) {
+			setsig(&sigtraps[SIGINT], SIG_IGN,
+			    SS_RESTORE_IGN|SS_FORCE);
+			setsig(&sigtraps[SIGQUIT], SIG_IGN,
+			    SS_RESTORE_IGN|SS_FORCE);
+		}
+		sigprocmask(SIG_UNBLOCK, &sm_fork, NULL);
 		execute(t, (flags & XERROK) | XEXEC, NULL); /* no return */
 		internal_warningf("%s: execute() returned", __func__);
 		unwind(LLEAVE);
@@ -1105,7 +1132,9 @@ j_waitj(Job *j,
 		rv = j->status;
 
 
+	/* a script that waits for a job learns its fate from $? */
 	if (!(flags & JW_ASYNCNOTIFY) &&
+	    (!(flags & JW_INTERRUPT) || Flag(FTALKING)) &&
 	    (!Flag(FMONITOR) || j->state != PSTOPPED)) {
 		j_print(j, JP_SHORT, shl_out);
 		shf_flush(shl_out);
@@ -1855,6 +1884,8 @@ runtrap(Trap *p)
 	int	i = p->signal;
 	char	*trapstr = p->trap;
 	int	oexstat;
+	int	otrap_exstat;
+	int	otrap_infunc;
 	int	old_changed = 0;
 
 	p->set = 0;
@@ -1879,10 +1910,16 @@ runtrap(Trap *p)
 		p->trap = NULL;
 	}
 	oexstat = exstat;
+	otrap_exstat = trap_exstat;
+	otrap_infunc = trap_infunc;
+	trap_exstat = oexstat;
+	trap_infunc = 0;
 	/* Note: trapstr is fully parsed before anything is executed, thus
 	 * no problem with afree(p->trap) in settrap() while still in use.
 	 */
 	command(trapstr, current_lineno);
+	trap_exstat = otrap_exstat;
+	trap_infunc = otrap_infunc;
 	exstat = oexstat;
 	if (i == SIGEXIT_ || i == SIGERR_) {
 		if (p->flags & TF_CHANGED)
@@ -1904,10 +1941,16 @@ cleartraps(void)
 	trap = 0;
 	intrsig = 0;
 	fatal_trap = 0;
+	/* trap without operands still lists them, as in $(trap) */
+	traps_inherited = 1;
 	for (i = NSIG+1, p = sigtraps; --i >= 0; p++) {
 		p->set = 0;
-		if ((p->flags & TF_USER_SET) && (p->trap && p->trap[0]))
+		afree(p->otrap, APERM);
+		p->otrap = NULL;
+		if ((p->flags & TF_USER_SET) && (p->trap && p->trap[0])) {
+			p->otrap = str_save(p->trap, APERM);
 			settrap(p, NULL);
+		}
 	}
 }
 
@@ -1938,7 +1981,7 @@ settrap(Trap *p, char *s)
 	if ((p->flags & (TF_DFL_INTR|TF_FATAL)) && f == SIG_DFL)
 		f = trapsig;
 	else if (p->flags & TF_SHELL_USES) {
-		if (!(p->flags & TF_ORIG_IGN) || Flag(FTALKING)) {
+		if (!(p->flags & TF_ORIG_IGN) || Flag(FTALKING_I)) {
 			/* do what user wants at exec time */
 			p->flags &= ~(TF_EXEC_IGN|TF_EXEC_DFL);
 			if (f == SIG_IGN)
@@ -2012,7 +2055,7 @@ setsig(Trap *p, sh_sig_t f, int flags)
 	 *	- the shell wants for force a change
 	 */
 	if ((p->flags & TF_ORIG_IGN) && !(flags & SS_FORCE) &&
-	    (!(flags & SS_USER) || !Flag(FTALKING)))
+	    (!(flags & SS_USER) || !Flag(FTALKING_I)))
 		return 0;
 
 	setexecsig(p, flags & SS_RESTORE_MASK);
