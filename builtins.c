@@ -1938,8 +1938,14 @@ c_alias(char **wp)
 			if (newval) {
 				ap->val.s = str_save(newval, APERM);
 				ap->flag |= ALLOC|ISSET;
-			} else
+			} else {
 				ap->flag &= ~ISSET;
+				/* hash: a utility that cannot be found */
+				if (tflag && !findcom(alias, FC_BI|FC_FUNC)) {
+					bi_errorf("%s: not found", alias);
+					rv = 1;
+				}
+			}
 		}
 		ap->flag |= DEFINED;
 		if (prefix == '+')
