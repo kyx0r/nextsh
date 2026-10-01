@@ -533,7 +533,19 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
 			if (!t->vars[i + 1])
 				shf_flush(shl_out);
 		}
-		typeset(cp, type_flags, 0, 0, 0);
+		/* POSIX: an assignment error before a utility other than
+		 * a special builtin doesn't exit the shell
+		 */
+		if (ap[0] && !(tp && tp->type == CSHELL &&
+		    (tp->flag & SPEC_BI) && keepasn_ok))
+			typeset_bierr = 3;
+		if (typeset(cp, type_flags, 0, 0, 0) == NULL &&
+		    typeset_bierr == 2) {
+			typeset_bierr = 0;
+			rv = 1;
+			goto Leave;
+		}
+		typeset_bierr = 0;
 		if (bourne_function_call && !(type_flags & EXPORT))
 			typeset(cp, LOCAL|LOCAL_COPY|EXPORT, 0, 0, 0);
 	}
