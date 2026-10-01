@@ -28,7 +28,6 @@ c_shift(char **wp)
 {
 	struct block *l = genv->loc;
 	int n;
-	int64_t val;
 	char *arg;
 
 	if (ksh_getopt(wp, &builtin_opt, null) == '?')
@@ -36,8 +35,10 @@ c_shift(char **wp)
 	arg = wp[builtin_opt.optind];
 
 	if (arg) {
-		evaluate(arg, &val, KSH_UNWIND_ERROR, false);
-		n = val;
+		if (!getn(arg, &n)) {
+			bi_errorf("%s: bad number", arg);
+			return (1);
+		}
 	} else
 		n = 1;
 	if (n < 0) {
