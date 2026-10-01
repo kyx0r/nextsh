@@ -496,7 +496,7 @@ c_eval(char **wp)
 int
 c_trap(char **wp)
 {
-	int i;
+	int i, rv = 0;
 	char *s;
 	Trap *p;
 
@@ -532,12 +532,14 @@ c_trap(char **wp)
 	while (*wp != NULL) {
 		p = gettrap(*wp++, true);
 		if (p == NULL) {
-			bi_errorf("bad signal %s", wp[-1]);
-			return 1;
+			/* POSIX: not an error that exits the shell */
+			warningf(true, "trap: bad signal %s", wp[-1]);
+			rv = 1;
+			continue;
 		}
 		settrap(p, s);
 	}
-	return 0;
+	return rv;
 }
 
 int
