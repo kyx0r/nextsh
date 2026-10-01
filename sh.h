@@ -1377,6 +1377,9 @@ void	quitenv(struct shf *);
 void	cleanup_parents_env(void);
 void	cleanup_proc_env(void);
 /* misc.c */
+void	stack_init(void);
+bool	stack_deep(void);
+void	stack_check(void);
 void	setctypes(const char *, int);
 void	initctypes(void);
 char *	u64ton(uint64_t, int);

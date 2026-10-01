@@ -159,6 +159,7 @@ main(int argc, char *argv[])
 	struct env env;
 	pid_t ppid;
 
+	stack_init();
 	kshname = argv[0];
 
 	if (sh_issetugid()) { /* could later drop privileges */
