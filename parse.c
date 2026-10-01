@@ -2138,6 +2138,8 @@ get_command(int cf)
 	XPtrV args, vars;
 	struct nesting_state old_nesting;
 
+	if (stack_deep())
+		yyerror("nesting too deep\n");
 	iops = areallocarray(NULL, NUFILE + 1,
 	    sizeof(struct ioword *), ATEMP);
 	XPinit(args, 16);

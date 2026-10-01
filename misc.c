@@ -409,6 +409,65 @@ static const struct cclass {
 
 #define NCCLASSES	(sizeof(cclasses) / sizeof(cclasses[0]) - 1)
 
+static const char *stack_base;
+static size_t stack_max;
+
+/* an address in the current stack frame; with sanitizers, locals may
+ * live on a separate fake stack so prefer the frame address */
+#ifdef __GNUC__
+#define stack_addr()	((const char *) __builtin_frame_address(0))
+#else
+static const char *
+stack_addr(void)
+{
+	volatile char here;
+
+	return (const char *) &here;
+}
+#endif
+
+/* remember where the stack starts and how much of it may be used, so
+ * deeply nested input or runaway recursion fails with an error instead
+ * of overflowing the stack
+ */
+void
+stack_init(void)
+{
+	struct rlimit rl;
+	size_t lim = 8 * 1024 * 1024;
+
+	if (getrlimit(RLIMIT_STACK, &rl) == 0) {
+		if (rl.rlim_cur == RLIM_INFINITY)
+			lim = 256 * 1024 * 1024;
+		else
+			lim = rl.rlim_cur;
+	}
+	/* leave headroom for the deepest frames between checks and for
+	 * the error path itself */
+	stack_base = stack_addr();
+	stack_max = lim - (lim / 4 > 1024 * 1024 ? 1024 * 1024 : lim / 4);
+}
+
+bool
+stack_deep(void)
+{
+	const char *here = stack_addr();
+	size_t used;
+
+	if (stack_base == NULL)
+		return false;
+	used = here < stack_base ? (size_t) (stack_base - here) :
+	    (size_t) (here - stack_base);
+	return used > stack_max;
+}
+
+void
+stack_check(void)
+{
+	if (stack_deep())
+		errorf("nesting too deep");
+}
+
 /*
  * Fast character classes
  */

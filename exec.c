@@ -44,6 +44,8 @@ execute(struct op *volatile t,
 	struct ioword **iowp;
 	struct tbl *tp = NULL;
 
+	stack_check();
+
 	if (t == NULL)
 		return 0;
 

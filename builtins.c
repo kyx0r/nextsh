@@ -2744,6 +2744,7 @@ test_aexpr(Test_env *te, int do_eval)
 static int
 test_nexpr(Test_env *te, int do_eval)
 {
+	stack_check();
 	if (!(te->flags & TEF_ERROR) && (*te->isa)(te, TM_NOT))
 		return !test_nexpr(te, do_eval);
 	return test_primary(te, do_eval);

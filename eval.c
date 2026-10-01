@@ -1496,6 +1496,7 @@ evalexpr(Expr_state *es, enum prec prec)
 	enum token op;
 	int64_t res = 0;
 
+	stack_check();
 	if (prec == P_PRIMARY) {
 		op = es->tok;
 		if (op == O_BNOT || op == O_LNOT || op == O_MINUS ||
