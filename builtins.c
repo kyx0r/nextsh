@@ -293,6 +293,11 @@ c_read(char **wp)
 	if (*wp == NULL)
 		*--wp = "REPLY";
 
+	if (fcntl(fd, F_GETFL) == -1) {
+		bi_errorf("%d: %s", fd, strerror(errno));
+		return 2;
+	}
+
 	/* Since we can't necessarily seek backwards on non-regular files,
 	 * don't buffer them so we can't read too much.
 	 */
