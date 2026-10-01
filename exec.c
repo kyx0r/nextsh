@@ -705,10 +705,44 @@ comexec(struct op *t, struct tbl *volatile tp, char **ap, volatile int flags,
 	return rv;
 }
 
+/* a newline after shell-like text comes before the first NUL */
+static int
+looks_like_text(const char *p)
+{
+	int code = 0;
+
+	for (; *p != '\0'; p++) {
+		if ((*p >= 'a' && *p <= 'z') || *p == '$' || *p == '`')
+			code = 1;
+		else if (*p == '\n' && code)
+			return 1;
+	}
+	return 0;
+}
+
 static void
 scriptexec(struct op *tp, char **ap)
 {
 	char *shell;
+	char buf[512];
+	ssize_t n;
+	int fd;
+
+	/* Not a script but a binary for some other system?  A NUL may
+	 * follow a script (one that ends in exit, say), but not come
+	 * before a line that looks like shell code: one with a lowercase
+	 * letter, $ or `, so a PNG or ELF header is caught.
+	 */
+	if ((fd = open(tp->str, O_RDONLY | O_CLOEXEC)) >= 0) {
+		n = read(fd, buf, sizeof(buf));
+		close(fd);
+		if (n > 0 && memchr(buf, '\0', n) && !looks_like_text(buf)) {
+			warningf(true, "%s: cannot execute binary file",
+			    tp->str);
+			exstat = 126;
+			unwind(LLEAVE);
+		}
+	}
 
 	shell = str_val(global("EXECSHELL"));
 	if (shell && *shell)
